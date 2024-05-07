@@ -4,15 +4,25 @@ import matplotlib.pyplot as plt
 def lerp(v0, v1, t):
     return (1 - t) * v0 + t * v1
 
+import numpy as np
+
 def rot45(m):
-    r = np.zeros(m.shape, m.dtype)
-    for level_axis0, level_axis1 in (range(m.shape[0]), range(m.shape[1])):
-        # rotate outer layer by axes
-        # paste rotated to r
-        # delete outer level from m
-        # if m odd - release center of m
-        pass
-    return r
+    m = np.asarray(m)
+    rows, cols = m.shape[:2]
+
+    new_rows = int(np.ceil(rows * np.sqrt(2)))
+    new_cols = int(np.ceil(cols * np.sqrt(2)))
+    new_shape = (new_rows, new_cols)
+    rotated = np.zeros(new_shape, dtype=m.dtype)
+
+    for i in range(rows):
+        for j in range(cols):
+            new_i = int(i * np.sqrt(2))
+            new_j = int(j * np.sqrt(2))
+            rotated[new_i, new_j] = m[i, j]
+
+    return rotated
+
 
 size = 3
 image = np.zeros((size, size, 3), dtype="uint8")
