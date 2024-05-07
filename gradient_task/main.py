@@ -4,6 +4,16 @@ import matplotlib.pyplot as plt
 def lerp(v0, v1, t):
     return (1 - t) * v0 + t * v1
 
+def rot45(m):
+    r = np.zeros(m.shape, m.dtype)
+    for level_axis0, level_axis1 in (range(m.shape[0]), range(m.shape[1])):
+        # rotate outer layer by axes
+        # paste rotated to r
+        # delete outer level from m
+        # if m odd - release center of m
+        pass
+    return r
+
 size = 3
 image = np.zeros((size, size, 3), dtype="uint8")
 assert image.shape[0] == image.shape[1]
@@ -18,7 +28,11 @@ for i, v in enumerate(np.linspace(0, 1, image.shape[0])):
     image[i, :, :] = [r, g, b]
 
 image = np.rot90(image, k=3)
-
 plt.figure(1)
 plt.imshow(image)
+
+image = rot45(image)
+plt.figure(2)
+plt.imshow(image)
+
 plt.show()
