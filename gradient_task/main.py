@@ -35,7 +35,7 @@ plt.imshow(vertical_gradient(color1, color2, size))
 plt.title('Вертикальный градиент')
 
 plt.subplot(1, 2, 2)
-plt.imshow(diagonal_gradient(color1, color2, size))
+plt.imshow(np.rot90(diagonal_gradient(color1, color2, size), k=2))
 plt.title('Диагональный градиент')
 
 plt.show()
