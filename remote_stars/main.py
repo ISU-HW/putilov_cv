@@ -3,67 +3,75 @@ from PIL import Image
 
 
 def is_valid_point(image_array, row, col):
-    if row < 0 or row >= image_array.shape[0]:
+    if not 0 <= col < image_array.shape[1]:
         return False
-    if col < 0 or col >= image_array.shape[1]:
+    if not 0 <= row < image_array.shape[0]:
         return False
-    if image_array[row, col] == 0:
-        return False
-    return True
+    if image_array[row, col] != 0:
+        return True
+    return False
 
 
 def get_neighbors(image_array, row, col):
-    neighbors = []
-    directions = [(0, -1), (0, 1), (-1, 0), (1, 0)]
-    for dr, dc in directions:
-        nr, nc = row + dr, col + dc
-        if is_valid_point(image_array, nr, nc):
-            neighbors.append((nr, nc))
-    return neighbors
+    left = row, col - 1
+    right = row, col + 1
+    top = row - 1, col
+    bottom = row + 1, col
+    valid_neighbors = []
+    for neighbor in [left, right, top, bottom]:
+        if is_valid_point(image_array, *neighbor):
+            valid_neighbors.append(neighbor)
+    return valid_neighbors
 
 
 def find_extremum_points(image_array):
-    extremums = []
+    extremum_points = []
     for row in range(image_array.shape[0]):
         for col in range(image_array.shape[1]):
             if not is_valid_point(image_array, row, col):
                 continue
             neighbors = get_neighbors(image_array, row, col)
-            if not neighbors:
+            if len(neighbors) == 0:
                 continue
-            current_value = image_array[row, col]
-            is_max = True
-            for nr, nc in neighbors:
-                if current_value <= image_array[nr, nc]:
-                    is_max = False
+            is_extremum = True
+            for neighbor_row, neighbor_col in neighbors:
+                if image_array[row, col] <= image_array[neighbor_row, neighbor_col]:
+                    is_extremum = False
                     break
-            if is_max:
-                extremums.append((row, col))
-    return extremums
+            if is_extremum:
+                extremum_points.append((row, col))
+    return extremum_points
 
 
-def calculate_distance(p1, p2):
-    return ((p2[0] - p1[0]) ** 2 + (p2[1] - p1[1]) ** 2) ** 0.5
+def calculate_distance(point1, point2):
+    return np.sqrt((point2[0] - point1[0]) ** 2 + (point1[1] - point2[1]) ** 2)
 
 
 def load_image(filename):
-    img = Image.open(filename)
-    if img.mode != "L":
-        img = img.convert("L")
-    return np.array(img)
+    image = Image.open(filename)
+    if image.mode != "L":
+        image = image.convert("L")
+    return np.array(image, dtype=np.uint8)
 
 
 def analyze_image(filename):
     image_array = load_image(filename)
-    extremums = find_extremum_points(image_array)
-    if len(extremums) == 2:
-        return calculate_distance(extremums[0], extremums[1])
-    return None
+    extremum_points = find_extremum_points(image_array)
+    if len(extremum_points) == 2:
+        distance = calculate_distance(extremum_points[0], extremum_points[1])
+        return distance
+    else:
+        return None
 
 
 if __name__ == "__main__":
-    result = analyze_image("test1.png")
-    if result:
-        print(f"Distance: {result}")
-    else:
-        print("No two extremums found")
+    try:
+        result = analyze_image("test1.png")
+        if result is not None:
+            print(f"Distance: {result:.1f}")
+        else:
+            print("No two extremums found")
+    except FileNotFoundError:
+        print("Файл не найден")
+    except Exception as e:
+        print(f"Ошибка: {e}")
