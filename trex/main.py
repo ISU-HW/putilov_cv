@@ -1,11 +1,13 @@
-import tkinter as tk
 from gui import TRexGUI
 
 
 def main():
-    root = tk.Tk()
-    app = TRexGUI(root)
-    root.mainloop()
+    print("Запуск TRex Bot...")
+
+    app = TRexGUI()
+    app.run()
+
+    print("TRex Bot завершен.")
 
 
 if __name__ == "__main__":
