@@ -51,7 +51,7 @@ for object_id in range(1, total_objects_count + 1):
             object_id
         ]
 
-background_color_rgb = [1, 1, 1]
+background_color_rgb = [0, 0, 0]
 visualization_window_width = 10
 visualization_window_height = 8.5
 
