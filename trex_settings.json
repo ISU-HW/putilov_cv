@@ -1,9 +1,0 @@
-{
-  "jump_delay": 0.1,
-  "scan_delay": 0.01,
-  "confidence_threshold": 0.7,
-  "obstacle_density": 0.05,
-  "capture_width": 600,
-  "capture_height": 150,
-  "gameover_confidence": 1.0
-}
