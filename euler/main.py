@@ -6,6 +6,7 @@ from collections import Counter
 def count_holes_in_image(binary_image):
     prepared_image = (binary_image > 0).astype(np.uint8) * 255
 
+    # Все контуры и их вложенность
     contours, hierarchy_info = cv2.findContours(
         prepared_image,
         cv2.RETR_TREE,
