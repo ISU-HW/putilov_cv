@@ -6,16 +6,18 @@ import time
 import argparse
 import matplotlib.pyplot as plt
 from typing import List, Tuple, Optional
-from scipy.spatial.distance import cdist
 
 
 class VectorPlatform:
-    def __init__(self, contour: np.ndarray):
+    def __init__(
+        self, contour: np.ndarray, color: Tuple[int, int, int] = (100, 100, 255)
+    ):
         self.contour = contour
         self.simplified_contour = self._simplify_contour(contour)
         self.bbox = cv2.boundingRect(contour)
         self.x, self.y, self.w, self.h = self.bbox
         self.segments = self._create_segments()
+        self.color = color
 
     def _simplify_contour(
         self, contour: np.ndarray, epsilon_factor: float = 0.02
@@ -159,91 +161,144 @@ class Ball:
 
 
 class AdvancedPlatformDetector:
-    def __init__(self, min_area: int = 500):
+    def __init__(self, min_area: int = 300):
         self.min_area = min_area
         self.last_platforms = []
         self.background_model = None
 
-    def _preprocess_image(
-        self, image: np.ndarray, block_size: int = 11, c_value: int = 2
-    ) -> np.ndarray:
+    def _preprocess_image(self, image: np.ndarray) -> np.ndarray:
         if len(image.shape) == 3:
             gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         else:
             gray = image.copy()
 
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        opened = cv2.morphologyEx(gray, cv2.MORPH_OPEN, kernel)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
 
-        adaptive_thresh = cv2.adaptiveThreshold(
-            opened,
-            255,
-            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-            cv2.THRESH_BINARY,
-            block_size,
-            c_value,
-        )
+        _, thresh = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
-        cleaned = cv2.morphologyEx(adaptive_thresh, cv2.MORPH_CLOSE, kernel_close)
+        if np.mean(thresh) > 127:
+            thresh = cv2.bitwise_not(thresh)
 
-        kernel_erode = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
-        eroded = cv2.erode(cleaned, kernel_erode, iterations=1)
-        dilated = cv2.dilate(eroded, kernel_erode, iterations=1)
+        kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (7, 7))
+        closed = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_close)
+
+        kernel_fill = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        filled = cv2.morphologyEx(closed, cv2.MORPH_CLOSE, kernel_fill)
+
+        kernel_dilate = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2, 2))
+        dilated = cv2.dilate(filled, kernel_dilate, iterations=1)
 
         return dilated
 
-    def _find_optimal_threshold(self, image: np.ndarray) -> Tuple[int, int, int]:
+    def _extract_platform_color(
+        self, original_image: np.ndarray, contour: np.ndarray
+    ) -> Tuple[int, int, int]:
+        try:
 
-        block_sizes = [9, 11, 13, 15, 17, 19]
-        c_values = [1, 2, 3, 4, 5]
+            x, y, w, h = cv2.boundingRect(contour)
 
-        best_params = (11, 2)
-        best_score = -1
-        results = []
+            roi = original_image[y : y + h, x : x + w]
 
-        for block_size in block_sizes:
-            for c_value in c_values:
-                try:
+            mask = np.zeros((h, w), dtype=np.uint8)
 
-                    processed = self._preprocess_image(image, block_size, c_value)
-                    edges = cv2.Canny(processed, 30, 100)
-                    contours, _ = cv2.findContours(
-                        edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+            shifted_contour = contour - [x, y]
+            cv2.fillPoly(mask, [shifted_contour], 255)
+
+            if len(roi.shape) == 3:
+
+                masked_pixels = roi[mask > 0]
+
+                if len(masked_pixels) > 0:
+
+                    pixels = masked_pixels.reshape(-1, 3).astype(np.float32)
+
+                    criteria = (
+                        cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER,
+                        10,
+                        1.0,
+                    )
+                    _, labels, centers = cv2.kmeans(
+                        pixels, 3, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS
                     )
 
-                    valid_count = 0
-                    for contour in contours:
-                        area = cv2.contourArea(contour)
-                        if area > self.min_area:
-                            perimeter = cv2.arcLength(contour, True)
-                            if perimeter > 0:
-                                circularity = (
-                                    4 * math.pi * area / (perimeter * perimeter)
-                                )
-                                if circularity < 0.8:
-                                    valid_count += 1
+                    unique, counts = np.unique(labels, return_counts=True)
+                    dominant_cluster = unique[np.argmax(counts)]
+                    dominant_color = centers[dominant_cluster]
 
-                    total_contours = len(contours)
-                    if valid_count > 0:
-
-                        noise_penalty = max(0, total_contours - 20) * 0.1
-                        score = valid_count - noise_penalty
-                    else:
-                        score = -1
-
-                    results.append(
-                        (block_size, c_value, total_contours, valid_count, score)
+                    return (
+                        int(dominant_color[2]),
+                        int(dominant_color[1]),
+                        int(dominant_color[0]),
                     )
+                else:
 
-                    if score > best_score:
-                        best_score = score
-                        best_params = (block_size, c_value)
+                    mean_color = cv2.mean(roi)
+                    return (int(mean_color[2]), int(mean_color[1]), int(mean_color[0]))
+            else:
 
-                except Exception:
+                masked_pixels = roi[mask > 0]
+                if len(masked_pixels) > 0:
+                    mean_gray = int(np.mean(masked_pixels))
+                    return (mean_gray, mean_gray, mean_gray)
+                else:
+                    return (128, 128, 128)
+
+        except Exception as e:
+            print(f"Ошибка извлечения цвета: {e}")
+
+            return (100, 150, 255)
+
+    def _merge_nearby_contours(
+        self, contours: List[np.ndarray], merge_distance: float = 15.0
+    ) -> List[np.ndarray]:
+        if len(contours) <= 1:
+            return contours
+
+        merged = []
+        used = set()
+
+        for i, contour1 in enumerate(contours):
+            if i in used:
+                continue
+
+            group = [contour1]
+            rect1 = cv2.boundingRect(contour1)
+
+            for j, contour2 in enumerate(contours):
+                if j <= i or j in used:
                     continue
 
-        return best_params[0], best_params[1], results
+                rect2 = cv2.boundingRect(contour2)
+
+                distance = self._rect_distance(rect1, rect2)
+                if distance < merge_distance:
+                    group.append(contour2)
+                    used.add(j)
+
+            if len(group) == 1:
+                merged.append(group[0])
+            else:
+
+                all_points = np.vstack(group)
+                hull = cv2.convexHull(all_points)
+                merged.append(hull)
+
+            used.add(i)
+
+        return merged
+
+    def _rect_distance(
+        self, rect1: Tuple[int, int, int, int], rect2: Tuple[int, int, int, int]
+    ) -> float:
+        x1, y1, w1, h1 = rect1
+        x2, y2, w2, h2 = rect2
+
+        center1 = (x1 + w1 / 2, y1 + h1 / 2)
+        center2 = (x2 + w2 / 2, y2 + h2 / 2)
+
+        return math.sqrt(
+            (center1[0] - center2[0]) ** 2 + (center1[1] - center2[1]) ** 2
+        )
 
     def detect_platforms_from_image(
         self, image_path: str, debug: bool = False
@@ -264,47 +319,35 @@ class AdvancedPlatformDetector:
         try:
             original = frame.copy()
 
-            print("Поиск оптимальных параметров threshold...")
-            best_block_size, best_c_value, threshold_results = (
-                self._find_optimal_threshold(frame)
-            )
-            print(
-                f"Выбраны параметры: block_size={best_block_size}, c_value={best_c_value}"
-            )
-
-            processed = self._preprocess_image(frame, best_block_size, best_c_value)
-
-            edges = cv2.Canny(processed, 30, 100)
+            processed = self._preprocess_image(frame)
 
             contours, _ = cv2.findContours(
-                edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+                processed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
             )
 
             if debug:
-                self._show_debug_stages(
-                    original,
-                    processed,
-                    edges,
-                    contours,
-                    threshold_results,
-                    best_block_size,
-                    best_c_value,
-                )
+                self._show_debug_stages(original, processed, contours)
 
-            platforms = []
+            filtered_contours = []
             for contour in contours:
                 area = cv2.contourArea(contour)
-
                 if area > self.min_area:
 
                     perimeter = cv2.arcLength(contour, True)
                     if perimeter > 0:
+
                         circularity = 4 * math.pi * area / (perimeter * perimeter)
-                        if circularity < 0.8:
-                            platforms.append(VectorPlatform(contour))
+                        if circularity < 0.9:
+                            filtered_contours.append(contour)
+
+            merged_contours = self._merge_nearby_contours(filtered_contours)
+
+            platforms = []
+            for contour in merged_contours:
+                color = self._extract_platform_color(original, contour)
+                platforms.append(VectorPlatform(contour, color))
 
             if platforms:
-
                 platforms.sort(key=lambda p: p.y)
                 self.last_platforms = platforms
                 print(f"Найдено {len(platforms)} валидных площадок")
@@ -325,15 +368,10 @@ class AdvancedPlatformDetector:
         self,
         original: np.ndarray,
         processed: np.ndarray,
-        edges: np.ndarray,
         contours: list,
-        threshold_results: list,
-        best_block_size: int,
-        best_c_value: int,
     ):
         try:
-
-            plt.figure(figsize=(15, 10))
+            plt.figure(figsize=(12, 8))
 
             plt.subplot(2, 3, 1)
             if len(original.shape) == 3:
@@ -345,17 +383,10 @@ class AdvancedPlatformDetector:
 
             plt.subplot(2, 3, 2)
             plt.imshow(processed, cmap="gray")
-            plt.title(
-                f"Предобработка\n(block_size={best_block_size}, c={best_c_value})"
-            )
+            plt.title("Предобработка")
             plt.axis("off")
 
             plt.subplot(2, 3, 3)
-            plt.imshow(edges, cmap="gray")
-            plt.title("Детекция краев (Canny)")
-            plt.axis("off")
-
-            plt.subplot(2, 3, 4)
             contour_img = original.copy()
             cv2.drawContours(contour_img, contours, -1, (0, 255, 0), 2)
             if len(contour_img.shape) == 3:
@@ -365,7 +396,7 @@ class AdvancedPlatformDetector:
             plt.title(f"Все контуры ({len(contours)})")
             plt.axis("off")
 
-            plt.subplot(2, 3, 5)
+            plt.subplot(2, 3, 4)
             filtered_img = original.copy()
             valid_contours = []
             for contour in contours:
@@ -374,7 +405,7 @@ class AdvancedPlatformDetector:
                     perimeter = cv2.arcLength(contour, True)
                     if perimeter > 0:
                         circularity = 4 * math.pi * area / (perimeter * perimeter)
-                        if circularity < 0.8:
+                        if circularity < 0.9:
                             valid_contours.append(contour)
 
             cv2.drawContours(filtered_img, valid_contours, -1, (255, 0, 0), 3)
@@ -385,124 +416,22 @@ class AdvancedPlatformDetector:
             plt.title(f"Валидные площадки ({len(valid_contours)})")
             plt.axis("off")
 
-            plt.subplot(2, 3, 6)
-            plt.text(0.05, 0.9, f"Минимальная площадь: {self.min_area}", fontsize=11)
-            plt.text(0.05, 0.8, f"Найдено контуров: {len(contours)}", fontsize=11)
-            plt.text(
-                0.05, 0.7, f"Валидных площадок: {len(valid_contours)}", fontsize=11
-            )
-            plt.text(0.05, 0.6, f"Лучшие параметры:", fontsize=11, weight="bold")
-            plt.text(0.05, 0.5, f"block_size = {best_block_size}", fontsize=10)
-            plt.text(0.05, 0.4, f"c_value = {best_c_value}", fontsize=10)
-            plt.text(0.05, 0.3, "Критерии фильтрации:", fontsize=11, weight="bold")
-            plt.text(0.05, 0.2, "- Площадь > min_area", fontsize=9)
-            plt.text(0.05, 0.1, "- Круглость < 0.8", fontsize=9)
-            plt.text(0.05, 0.0, "- Оптимизация по количеству", fontsize=9)
+            plt.subplot(2, 3, 5)
+            merged_contours = self._merge_nearby_contours(valid_contours)
+            merged_img = original.copy()
+            cv2.drawContours(merged_img, merged_contours, -1, (0, 0, 255), 3)
+            if len(merged_img.shape) == 3:
+                plt.imshow(cv2.cvtColor(merged_img, cv2.COLOR_BGR2RGB))
+            else:
+                plt.imshow(merged_img, cmap="gray")
+            plt.title(f"После объединения ({len(merged_contours)})")
             plt.axis("off")
 
             plt.tight_layout()
             plt.show()
-
-            if threshold_results:
-                self._show_threshold_analysis(
-                    threshold_results, best_block_size, best_c_value
-                )
 
         except Exception as e:
             print(f"Ошибка при показе debug информации: {e}")
-
-    def _show_threshold_analysis(
-        self, threshold_results: list, best_block_size: int, best_c_value: int
-    ):
-        """Показ анализа различных threshold параметров"""
-        try:
-            plt.figure(figsize=(12, 8))
-
-            block_sizes = sorted(set([r[0] for r in threshold_results]))
-            c_values = sorted(set([r[1] for r in threshold_results]))
-
-            valid_matrix = np.zeros((len(c_values), len(block_sizes)))
-            score_matrix = np.zeros((len(c_values), len(block_sizes)))
-
-            for block_size, c_value, total, valid, score in threshold_results:
-                i = c_values.index(c_value)
-                j = block_sizes.index(block_size)
-                valid_matrix[i, j] = valid
-                score_matrix[i, j] = score if score > 0 else 0
-
-            plt.subplot(2, 2, 1)
-            im1 = plt.imshow(valid_matrix, cmap="viridis", aspect="auto")
-            plt.colorbar(im1, label="Валидные контуры")
-            plt.title("Количество валидных контуров")
-            plt.xlabel("Block Size")
-            plt.ylabel("C Value")
-            plt.xticks(range(len(block_sizes)), block_sizes)
-            plt.yticks(range(len(c_values)), c_values)
-
-            best_i = c_values.index(best_c_value)
-            best_j = block_sizes.index(best_block_size)
-            plt.scatter(best_j, best_i, c="red", s=100, marker="x", linewidths=3)
-
-            plt.subplot(2, 2, 2)
-            im2 = plt.imshow(score_matrix, cmap="RdYlGn", aspect="auto")
-            plt.colorbar(im2, label="Оценка качества")
-            plt.title("Оценка качества параметров")
-            plt.xlabel("Block Size")
-            plt.ylabel("C Value")
-            plt.xticks(range(len(block_sizes)), block_sizes)
-            plt.yticks(range(len(c_values)), c_values)
-            plt.scatter(best_j, best_i, c="blue", s=100, marker="x", linewidths=3)
-
-            plt.subplot(2, 2, 3)
-            best_results = sorted(threshold_results, key=lambda x: x[4], reverse=True)[
-                :10
-            ]
-            table_data = []
-            for i, (bs, cv, total, valid, score) in enumerate(best_results):
-                marker = "★" if bs == best_block_size and cv == best_c_value else ""
-                table_data.append([f"{marker} {bs}", cv, total, valid, f"{score:.2f}"])
-
-            plt.table(
-                cellText=table_data,
-                colLabels=["Block Size", "C Value", "Всего", "Валидных", "Оценка"],
-                cellLoc="center",
-                loc="center",
-            )
-            plt.title("Топ-10 результатов")
-            plt.axis("off")
-
-            plt.subplot(2, 2, 4)
-            total_tests = len(threshold_results)
-            successful_tests = len([r for r in threshold_results if r[3] > 0])
-            avg_valid = (
-                np.mean([r[3] for r in threshold_results if r[3] > 0])
-                if successful_tests > 0
-                else 0
-            )
-
-            stats_text = f"""
-            Всего тестов: {total_tests}
-            Успешных: {successful_tests}
-            Среднее количество валидных: {avg_valid:.1f}
-            
-            Выбранные параметры:
-            Block Size: {best_block_size}
-            C Value: {best_c_value}
-            
-            Критерий выбора:
-            Максимальное количество валидных контуров
-            с минимальным шумом
-            """
-
-            plt.text(0.1, 0.5, stats_text, fontsize=10, verticalalignment="center")
-            plt.title("Статистика оптимизации")
-            plt.axis("off")
-
-            plt.tight_layout()
-            plt.show()
-
-        except Exception as e:
-            print(f"Ошибка при показе анализа threshold: {e}")
 
 
 class DrawingPlatform:
@@ -517,7 +446,6 @@ class DrawingPlatform:
 
     def add_point(self, x: int, y: int):
         if self.drawing:
-
             if (
                 not self.current_points
                 or math.sqrt(
@@ -530,11 +458,11 @@ class DrawingPlatform:
 
     def finish_drawing(self) -> Optional[VectorPlatform]:
         if self.drawing and len(self.current_points) > 2:
-
             contour = np.array(
                 [[point] for point in self.current_points], dtype=np.int32
             )
-            platform = VectorPlatform(contour)
+
+            platform = VectorPlatform(contour, (255, 165, 0))
             self.completed_contours.append(contour)
             self.drawing = False
             self.current_points = []
@@ -545,7 +473,6 @@ class DrawingPlatform:
         return None
 
     def cancel_drawing(self):
-        """Отменить текущее рисование"""
         self.drawing = False
         self.current_points = []
 
@@ -557,15 +484,14 @@ class CameraManager:
         self.is_opened = False
 
     def initialize(self) -> bool:
-        """Инициализация камеры"""
         try:
             self.cap = cv2.VideoCapture(self.camera_id)
             if not self.cap.isOpened():
                 print(f"Не удалось открыть камеру {self.camera_id}")
                 return False
 
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 800)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 600)
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
             self.is_opened = True
             print(f"Камера {self.camera_id} успешно инициализирована")
@@ -576,7 +502,6 @@ class CameraManager:
             return False
 
     def get_frame(self) -> Optional[np.ndarray]:
-        """Получение кадра с камеры"""
         if not self.is_opened or self.cap is None:
             return None
 
@@ -586,7 +511,6 @@ class CameraManager:
         return None
 
     def release(self):
-        """Освобождение ресурсов камеры"""
         if self.cap is not None:
             self.cap.release()
             self.is_opened = False
@@ -597,17 +521,20 @@ class Game:
         self,
         mode: str = "test",
         camera_id: int = 0,
-        screen_width: int = 800,
-        screen_height: int = 600,
+        screen_width: int = 1920,
+        screen_height: int = 1080,
         debug: bool = False,
     ):
         self.mode = mode
         self.screen_width = screen_width
         self.screen_height = screen_height
         self.debug = debug
+        self.fullscreen = True
 
         pygame.init()
-        self.screen = pygame.display.set_mode((screen_width, screen_height))
+        self.screen = pygame.display.set_mode(
+            (screen_width, screen_height), pygame.FULLSCREEN
+        )
         pygame.display.set_caption(f"Векторная симуляция шарика - Режим: {mode}")
         self.clock = pygame.time.Clock()
 
@@ -646,9 +573,20 @@ class Game:
         self.running = True
         self.last_platform_update = 0
         self.platform_update_interval = 0.1
+        self.show_debug = False
+
+    def toggle_fullscreen(self):
+        self.fullscreen = not self.fullscreen
+        if self.fullscreen:
+            self.screen = pygame.display.set_mode(
+                (self.screen_width, self.screen_height), pygame.FULLSCREEN
+            )
+        else:
+
+            self.screen = pygame.display.set_mode((640, 480))
+        print(f"Переключен в {'полноэкранный' if self.fullscreen else 'оконный'} режим")
 
     def update_platforms_from_camera(self):
-        """Обновление площадок из кадра камеры"""
         if self.mode == "live" and self.camera and self.camera.is_opened:
             frame = self.camera.get_frame()
             if frame is not None:
@@ -660,7 +598,6 @@ class Game:
                     self.platforms = new_platforms
 
     def reload_image_platforms(self):
-        """Перезагрузка площадок из изображения"""
         print("Перезагрузка площадок из doska.jpg...")
         new_platforms = self.platform_detector.detect_platforms_from_image(
             "doska.jpg", debug=self.debug
@@ -673,13 +610,33 @@ class Game:
 
     def handle_events(self):
         mouse_pos = pygame.mouse.get_pos()
+        keys = pygame.key.get_pressed()
+
+        current_size = self.screen.get_size()
+        scale_x = self.screen_width / current_size[0]
+        scale_y = self.screen_height / current_size[1]
+
+        game_mouse_x = int(mouse_pos[0] * scale_x)
+        game_mouse_y = int(mouse_pos[1] * scale_y)
+        game_mouse_pos = (game_mouse_x, game_mouse_y)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 self.running = False
 
             elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_SPACE:
+
+                if event.key == pygame.K_RETURN and (
+                    keys[pygame.K_LALT] or keys[pygame.K_RALT]
+                ):
+                    self.toggle_fullscreen()
+                elif event.key == pygame.K_ESCAPE:
+
+                    if self.fullscreen:
+                        self.toggle_fullscreen()
+                    else:
+                        self.running = False
+                elif event.key == pygame.K_SPACE:
                     self.ball = Ball(100, 50)
                 elif event.key == pygame.K_LEFT:
                     self.ball.vx -= 3
@@ -695,27 +652,22 @@ class Game:
                     else:
                         self.reload_image_platforms()
                 elif event.key == pygame.K_c and self.mode == "test":
-
                     self.platforms = []
                     if self.drawing_platform:
                         self.drawing_platform.completed_contours = []
                 elif event.key == pygame.K_d:
-
                     self.show_debug = not self.show_debug
 
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:
                     if self.mode == "test" and self.drawing_platform:
-
-                        self.drawing_platform.start_drawing(*mouse_pos)
+                        self.drawing_platform.start_drawing(*game_mouse_pos)
                 elif event.button == 3:
-
-                    self.ball.x, self.ball.y = mouse_pos
+                    self.ball.x, self.ball.y = game_mouse_pos
                     self.ball.vx = self.ball.vy = 0
 
             elif event.type == pygame.MOUSEBUTTONUP:
                 if event.button == 1 and self.mode == "test" and self.drawing_platform:
-
                     new_platform = self.drawing_platform.finish_drawing()
                     if new_platform:
                         self.platforms.append(new_platform)
@@ -726,36 +678,40 @@ class Game:
                     and self.drawing_platform
                     and self.drawing_platform.drawing
                 ):
-
-                    self.drawing_platform.add_point(*mouse_pos)
+                    self.drawing_platform.add_point(*game_mouse_pos)
 
     def draw(self):
-        if self.mode == "live":
-            self.screen.fill(self.BLACK)
-        else:
-            self.screen.fill(self.WHITE)
+
+        self.screen.fill(self.BLACK)
+
+        current_size = self.screen.get_size()
+        scale_x = current_size[0] / self.screen_width
+        scale_y = current_size[1] / self.screen_height
 
         for i, platform in enumerate(self.platforms):
-            color = self.GREEN if self.mode == "live" else self.BLUE
+
+            color = platform.color
 
             if len(platform.simplified_contour) > 2:
                 points = platform.simplified_contour.reshape(-1, 2)
-                pygame.draw.polygon(self.screen, color, points)
 
-                pygame.draw.polygon(
-                    self.screen,
-                    self.BLACK if self.mode == "test" else self.WHITE,
-                    points,
-                    2,
-                )
+                scaled_points = [
+                    (int(x * scale_x), int(y * scale_y)) for x, y in points
+                ]
+                pygame.draw.polygon(self.screen, color, scaled_points)
+                pygame.draw.polygon(self.screen, self.WHITE, scaled_points, 2)
 
             if self.debug and self.mode == "test":
                 font_small = pygame.font.Font(None, 20)
                 num_text = font_small.render(str(i), True, self.RED)
-                self.screen.blit(num_text, (platform.x + 5, platform.y + 5))
+                scaled_x = int(platform.x * scale_x + 5)
+                scaled_y = int(platform.y * scale_y + 5)
+                self.screen.blit(num_text, (scaled_x, scaled_y))
 
                 for (x1, y1), (x2, y2) in platform.segments:
-                    pygame.draw.line(self.screen, self.RED, (x1, y1), (x2, y2), 1)
+                    scaled_start = (int(x1 * scale_x), int(y1 * scale_y))
+                    scaled_end = (int(x2 * scale_x), int(y2 * scale_y))
+                    pygame.draw.line(self.screen, self.RED, scaled_start, scaled_end, 1)
 
         if (
             self.mode == "test"
@@ -764,77 +720,80 @@ class Game:
             and len(self.drawing_platform.current_points) > 1
         ):
             points = self.drawing_platform.current_points
-            pygame.draw.lines(self.screen, self.ORANGE, False, points, 3)
+
+            scaled_points = [(int(x * scale_x), int(y * scale_y)) for x, y in points]
+            pygame.draw.lines(self.screen, self.ORANGE, False, scaled_points, 3)
 
         if len(self.ball.trail) > 1:
             for i in range(1, len(self.ball.trail)):
                 alpha = i / len(self.ball.trail)
-                color = (int(255 * alpha), int(100 * alpha), int(100 * alpha))
-                if self.mode == "live":
-                    color = (int(255 * alpha), int(255 * alpha), int(255 * alpha))
+                color = (int(255 * alpha), int(255 * alpha), int(255 * alpha))
 
                 start_pos = (
-                    int(self.ball.trail[i - 1][0]),
-                    int(self.ball.trail[i - 1][1]),
+                    int(self.ball.trail[i - 1][0] * scale_x),
+                    int(self.ball.trail[i - 1][1] * scale_y),
                 )
-                end_pos = (int(self.ball.trail[i][0]), int(self.ball.trail[i][1]))
+                end_pos = (
+                    int(self.ball.trail[i][0] * scale_x),
+                    int(self.ball.trail[i][1] * scale_y),
+                )
 
                 if i < len(self.ball.trail) - 1:
                     pygame.draw.line(
                         self.screen, color, start_pos, end_pos, max(1, int(3 * alpha))
                     )
 
-        ball_color = self.WHITE if self.mode == "live" else self.RED
+        ball_color = self.WHITE
+        scaled_ball_x = int(self.ball.x * scale_x)
+        scaled_ball_y = int(self.ball.y * scale_y)
+        scaled_radius = int(self.ball.radius * min(scale_x, scale_y))
+
         pygame.draw.circle(
             self.screen,
             ball_color,
-            (int(self.ball.x), int(self.ball.y)),
-            int(self.ball.radius),
+            (scaled_ball_x, scaled_ball_y),
+            scaled_radius,
         )
 
         if self.mode == "test":
-            shadow_y = self.ball.y + 8
-            pygame.draw.ellipse(
-                self.screen,
-                (150, 150, 150),
-                (self.ball.x - self.ball.radius, shadow_y - 2, self.ball.radius * 2, 4),
-            )
-
-        if self.mode == "test":
-            font = pygame.font.Font(None, 28)
             font_small = pygame.font.Font(None, 20)
 
             info_lines = [
-                f"Режим: {self.mode.upper()} | Площадок: {len(self.platforms)} | Debug: {'ON' if self.debug else 'OFF'}",
-                "ЛКМ - рисовать площадку | ПКМ - переместить шарик",
+                f"Режим: {self.mode.upper()} | Площадок: {len(self.platforms)} | Debug: {'ON' if self.debug else 'OFF'} | {'FULLSCREEN' if self.fullscreen else 'WINDOWED'}",
+                "ЛКМ - рисовать платформу | ПКМ - переместить шарик",
                 "SPACE - сброс | Стрелки - толчки | C - очистить | R - перезагрузить",
+                "Alt+Enter - переключить полноэкранный режим | ESC - выход/переключить в окно",
             ]
 
             for i, line in enumerate(info_lines):
-                text = font_small.render(line, True, self.BLACK)
+                text = font_small.render(line, True, self.WHITE)
                 self.screen.blit(text, (10, 10 + i * 22))
 
             speed_text = font_small.render(
                 f"Скорость: vx={self.ball.vx:.1f}, vy={self.ball.vy:.1f}",
                 True,
-                self.BLACK,
+                self.WHITE,
             )
-            self.screen.blit(speed_text, (10, 80))
+            self.screen.blit(speed_text, (10, 100))
 
         pygame.display.flip()
 
     def run(self):
         print(f"Запуск векторной симуляции в режиме: {self.mode}")
+        print(f"Разрешение: {self.screen_width}x{self.screen_height}")
+        print(f"Режим экрана: {'полноэкранный' if self.fullscreen else 'оконный'}")
         if self.debug:
             print("DEBUG режим включен - будет показана обработка изображения")
         print("Управление:")
         if self.mode == "test":
-            print("- ЛКМ: рисовать площадку")
+            print("- ЛКМ: рисовать платформу")
             print("- ПКМ: переместить шарик")
-            print("- C: очистить площадки")
+            print("- C: очистить платформы")
         print("- SPACE: сброс шарика")
         print("- Стрелки: толчки")
-        print("- R: перезагрузить площадки")
+        print("- R: перезагрузить платформы")
+        print("- Alt+Enter: переключить полноэкранный режим")
+        print("- ESC: выход или переключение в оконный режим")
 
         while self.running:
             current_time = time.time()
@@ -861,7 +820,7 @@ class Game:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Векторная симуляция падения шарика")
+    parser = argparse.ArgumentParser(description="Симуляция падения шарика")
     parser.add_argument(
         "--mode",
         choices=["test", "live"],
@@ -876,10 +835,29 @@ def main():
         action="store_true",
         help="Включить debug режим с показом этапов обработки изображения",
     )
+    parser.add_argument(
+        "--width", type=int, default=1920, help="Ширина экрана (по умолчанию 1920)"
+    )
+    parser.add_argument(
+        "--height", type=int, default=1080, help="Высота экрана (по умолчанию 1080)"
+    )
+    parser.add_argument(
+        "--windowed", action="store_true", help="Запустить в оконном режиме"
+    )
 
     args = parser.parse_args()
 
-    simulation = Game(mode=args.mode, camera_id=args.camera, debug=args.debug)
+    simulation = Game(
+        mode=args.mode,
+        camera_id=args.camera,
+        debug=args.debug,
+        screen_width=args.width,
+        screen_height=args.height,
+    )
+
+    if args.windowed:
+        simulation.toggle_fullscreen()
+
     simulation.run()
 
 
