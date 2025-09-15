@@ -124,10 +124,11 @@ class Game:
                 continue
 
             if processed_img is not None:
-                resized_image = cv2.resize(self.obstacle_detector.image, (self.width, self.height))
+                resized_image = cv2.resize(
+                    self.obstacle_detector.image, (self.width, self.height)
+                )
                 pygame.surfarray.blit_array(
-                    self.screen,
-                    cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
+                    self.screen, cv2.cvtColor(resized_image, cv2.COLOR_BGR2RGB)
                 )
 
                 ball.update_position(
@@ -152,12 +153,6 @@ class Game:
         cv2.destroyAllWindows()
         pygame.quit()
         sys.exit()
-
-if __name__ == "__main__":
-    obstacle_detector = ObstacleDetectorImage("doska.jpg")
-    game = Game(obstacle_detector)
-    game.run()
-
 
 
 if __name__ == "__main__":
