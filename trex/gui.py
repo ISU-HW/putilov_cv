@@ -1,28 +1,26 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from bot import TRexBot, BotState
-from debug import DebugWindow, Logger
+from logger import Logger
 
 
 class TRexGUI:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("TRex Bot")
-        self.root.geometry("400x600")
+        self.root.title("T-Rex Bot v2.0")
+        self.root.geometry("450x850")
         self.root.resizable(False, False)
         self.root.configure(bg="#2b2b2b")
-        self.root.attributes("-topmost", True)
 
         self.status_label = None
         self.control_button = None
         self.stats_vars = {}
+        self.current_game_vars = {}
 
         self.logger = Logger()
         self.bot = TRexBot(self.logger)
-        self.debug_window = DebugWindow(self.bot, self.logger)
 
         self.last_bot_state = BotState.READY
-        self.debug_shown = False
         self.game_over_dialog_shown = False
 
         self.create_widgets()
@@ -35,28 +33,42 @@ class TRexGUI:
         main_frame = tk.Frame(self.root, bg="#2b2b2b", padx=20, pady=20)
         main_frame.pack(fill="both", expand=True)
 
+        # Title
         title_label = tk.Label(
             main_frame,
-            text="TRex Bot",
-            font=("Arial", 16, "bold"),
+            text="T-Rex Bot v2.0",
+            font=("Arial", 18, "bold"),
             fg="white",
             bg="#2b2b2b",
         )
         title_label.pack(pady=(0, 20))
 
-        self.status_label = tk.Label(
+        # Status
+        status_frame = tk.LabelFrame(
             main_frame,
-            text="Готов к работе",
-            font=("Arial", 10),
+            text="Status",
+            font=("Arial", 12, "bold"),
+            fg="white",
+            bg="#2b2b2b",
+            relief="flat",
+        )
+        status_frame.pack(fill="x", pady=(0, 15))
+
+        self.status_label = tk.Label(
+            status_frame,
+            text="Ready to start",
+            font=("Arial", 11),
             fg="#90ee90",
             bg="#2b2b2b",
+            pady=10,
         )
-        self.status_label.pack(pady=(0, 10))
+        self.status_label.pack()
 
+        # Control button
         self.control_button = tk.Button(
             main_frame,
-            text="▶ Старт",
-            font=("Arial", 12, "bold"),
+            text="▶ Start",
+            font=("Arial", 14, "bold"),
             bg="#0d7377",
             fg="white",
             relief="flat",
@@ -66,30 +78,56 @@ class TRexGUI:
         )
         self.control_button.pack(pady=(0, 20))
 
-        info_frame = tk.LabelFrame(
+        # Current game stats
+        current_frame = tk.LabelFrame(
             main_frame,
-            text="Информация",
-            font=("Arial", 11, "bold"),
+            text="Current Game",
+            font=("Arial", 12, "bold"),
             fg="white",
             bg="#2b2b2b",
             relief="flat",
         )
-        info_frame.pack(fill="x", pady=(0, 15))
+        current_frame.pack(fill="x", pady=(0, 15))
 
-        info_text = tk.Text(
-            info_frame,
-            height=4,
-            bg="#3b3b3b",
-            fg="white",
-            font=("Arial", 8),
-            wrap=tk.WORD,
-            state=tk.DISABLED,
-        )
+        current_stats = [
+            ("Score", "current_score"),
+            ("Time", "current_time"),
+            ("Jumps", "current_jumps"),
+            ("Ducks", "current_ducks"),
+        ]
+
+        self.current_game_vars = {}
+        for label, key in current_stats:
+            frame = tk.Frame(current_frame, bg="#2b2b2b")
+            frame.pack(fill="x", pady=3)
+
+            tk.Label(
+                frame,
+                text=f"{label}:",
+                font=("Arial", 10),
+                fg="white",
+                bg="#2b2b2b",
+                width=10,
+                anchor="w",
+            ).pack(side="left")
+
+            var = tk.StringVar(value="0")
+            self.current_game_vars[key] = var
+
+            tk.Label(
+                frame,
+                textvariable=var,
+                font=("Arial", 10, "bold"),
+                fg="#ffdd44",
+                bg="#2b2b2b",
+                width=15,
+                anchor="e",
+            ).pack(side="right")
 
         settings_frame = tk.LabelFrame(
             main_frame,
-            text="Настройки",
-            font=("Arial", 11, "bold"),
+            text="Settings",
+            font=("Arial", 12, "bold"),
             fg="white",
             bg="#2b2b2b",
             relief="flat",
@@ -97,15 +135,16 @@ class TRexGUI:
         settings_frame.pack(fill="x", pady=(0, 15))
 
         settings = [
-            ("Чувствительность", "obstacle_density", 0.01, 0.3),
-            ("Задержка сканирования", "scan_delay", 0.001, 0.1),
-            ("Задержка прыжка", "jump_delay", 0.01, 0.5),
-            ("Порог уверенности", "confidence_threshold", 0.1, 0.99),
+            ("Jump Sensitivity", "jump_sensitivity", 0.01, 0.2),
+            ("Scan Delay (ms)", "scan_delay", 0.001, 0.1),
+            ("Jump Delay (ms)", "jump_delay", 0.01, 0.5),
+            ("Confidence", "confidence_threshold", 0.1, 0.99),
+            ("Duck Duration (s)", "duck_duration", 0.1, 1.0),
         ]
 
-        for i, (label, key, min_val, max_val) in enumerate(settings):
+        for label, key, min_val, max_val in settings:
             frame = tk.Frame(settings_frame, bg="#2b2b2b")
-            frame.pack(fill="x", pady=2)
+            frame.pack(fill="x", pady=3)
 
             tk.Label(
                 frame,
@@ -113,54 +152,55 @@ class TRexGUI:
                 font=("Arial", 9),
                 fg="white",
                 bg="#2b2b2b",
-                width=20,
+                width=18,
                 anchor="w",
             ).pack(side="left")
 
-            var = tk.DoubleVar(value=self.bot.settings[key])
+            var = tk.DoubleVar(value=self.bot.settings.get(key, min_val))
             setattr(self, f"{key}_var", var)
 
             scale = tk.Scale(
                 frame,
                 from_=min_val,
                 to=max_val,
-                resolution=0.001 if key == "obstacle_density" else 0.01,
+                resolution=0.001 if "delay" in key or "sensitivity" in key else 0.01,
                 orient="horizontal",
                 variable=var,
                 bg="#2b2b2b",
                 fg="white",
                 highlightthickness=0,
-                length=150,
+                length=180,
                 command=lambda val, k=key: self.on_setting_change(k, float(val)),
             )
             scale.pack(side="right")
 
         stats_frame = tk.LabelFrame(
             main_frame,
-            text="Статистика",
-            font=("Arial", 11, "bold"),
+            text="Overall Statistics",
+            font=("Arial", 12, "bold"),
             fg="white",
             bg="#2b2b2b",
             relief="flat",
         )
         stats_frame.pack(fill="x", pady=(0, 15))
 
-        self.stats_vars = {}
         stats_labels = [
-            ("Игр сыграно", "games_played"),
-            ("Лучший счёт", "best_score"),
-            ("Общее время", "total_time"),
-            ("Всего прыжков", "total_jumps"),
+            ("Games Played", "games_played"),
+            ("Best Score", "best_score"),
+            ("Total Time", "total_time"),
+            ("Total Jumps", "total_jumps"),
+            ("Total Ducks", "total_ducks"),
         ]
 
+        self.stats_vars = {}
         for label, key in stats_labels:
             frame = tk.Frame(stats_frame, bg="#2b2b2b")
-            frame.pack(fill="x", pady=2)
+            frame.pack(fill="x", pady=3)
 
             tk.Label(
                 frame,
-                text=label,
-                font=("Arial", 9),
+                text=f"{label}:",
+                font=("Arial", 10),
                 fg="white",
                 bg="#2b2b2b",
                 width=15,
@@ -173,21 +213,21 @@ class TRexGUI:
             tk.Label(
                 frame,
                 textvariable=var,
-                font=("Arial", 9),
+                font=("Arial", 10),
                 fg="#90ee90",
                 bg="#2b2b2b",
-                width=10,
+                width=12,
                 anchor="e",
             ).pack(side="right")
 
         button_frame = tk.Frame(main_frame, bg="#2b2b2b")
-        button_frame.pack(fill="x", pady=(10, 0))
+        button_frame.pack(fill="x", pady=(15, 0))
 
         reset_stats_btn = tk.Button(
             button_frame,
-            text="Сбросить статистику",
+            text="Reset Stats",
             font=("Arial", 10),
-            bg="#555555",
+            bg="#cc2936",
             fg="white",
             relief="flat",
             command=self.reset_stats_with_confirmation,
@@ -196,14 +236,24 @@ class TRexGUI:
 
         save_btn = tk.Button(
             button_frame,
-            text="Сохранить настройки",
+            text="Save Settings",
             font=("Arial", 10),
-            bg="#555555",
+            bg="#0d7377",
             fg="white",
             relief="flat",
             command=self.bot.save_settings,
         )
         save_btn.pack(side="right")
+
+        # Info label
+        info_label = tk.Label(
+            main_frame,
+            text="v2.0: Added duck action for pterodactyls",
+            font=("Arial", 8),
+            fg="#666666",
+            bg="#2b2b2b",
+        )
+        info_label.pack(pady=(10, 0))
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
 
@@ -216,9 +266,9 @@ class TRexGUI:
             current_state = self.bot.state
 
             if self.bot.is_running:
-                self.control_button.config(text="⏹ Стоп", bg="#cc2936")
+                self.control_button.config(text="⏹ Stop", bg="#cc2936")
             else:
-                self.control_button.config(text="▶ Старт", bg="#0d7377")
+                self.control_button.config(text="▶ Start", bg="#0d7377")
 
             status_text = self.bot.status_message
             if self.bot.error_message:
@@ -227,45 +277,30 @@ class TRexGUI:
             status_color = self.get_status_color(current_state)
             self.status_label.config(text=status_text, fg=status_color)
 
-            self.manage_debug_window()
-
             if current_state == BotState.GAME_OVER and not self.game_over_dialog_shown:
                 self.handle_game_over_dialog()
 
+            self.update_current_game_stats()
             self.update_stats()
 
             self.last_bot_state = current_state
 
         except Exception as e:
-            self.logger.error("Ошибка обновления GUI", e)
+            self.logger.error("Error updating GUI", e)
 
     def get_status_color(self, state: BotState) -> str:
         color_map = {
-            BotState.READY: "#90ee90",
-            BotState.SEARCHING_DINO: "orange",
-            BotState.DINO_FOUND: "green",
-            BotState.DINO_NOT_FOUND: "red",
+            BotState.READY: "yellow",
+            BotState.SEARCHING_CANVAS: "orange",
+            BotState.CANVAS_FOUND: "green",
+            BotState.CANVAS_NOT_FOUND: "red",
             BotState.WAITING_FOR_GAME: "yellow",
-            BotState.PLAYING: "yellow",
+            BotState.PLAYING: "green",
             BotState.GAME_OVER: "orange",
-            BotState.STOPPED: "#90ee90",
+            BotState.STOPPED: "red",
             BotState.ERROR: "red",
         }
         return color_map.get(state, "white")
-
-    def manage_debug_window(self):
-        debug_info = self.bot.get_debug_info()
-
-        should_show = (
-            debug_info["should_show"] and debug_info["capture_area"] is not None
-        )
-
-        if should_show and not self.debug_shown:
-            self.debug_window.show(debug_info["capture_area"])
-            self.debug_shown = True
-        elif not should_show and self.debug_shown:
-            self.debug_window.hide()
-            self.debug_shown = False
 
     def handle_game_over_dialog(self):
         try:
@@ -275,18 +310,20 @@ class TRexGUI:
             score = game_stats.current_score
             game_time = game_stats.current_game_time
             jumps = game_stats.current_jumps
+            ducks = game_stats.current_ducks
 
-            message = f"""Игра завершена!
-            
-Результаты:
-• Счёт: {score}
-• Время игры: {game_time:.1f} сек
-• Количество прыжков: {jumps}
+            message = f"""Game Over!
 
-Хотите начать новую игру?"""
+Results:
+• Score: {score}
+• Time: {game_time:.1f} seconds
+• Jumps: {jumps}
+• Ducks: {ducks}
+
+Would you like to start a new game?"""
 
             result = messagebox.askyesno(
-                "T-Rex Bot - Игра завершена", message, icon="question"
+                "T-Rex Bot - Game Over", message, icon="question"
             )
 
             if result:
@@ -297,13 +334,36 @@ class TRexGUI:
             self.game_over_dialog_shown = False
 
         except Exception as e:
-            self.logger.error("Ошибка обработки диалога завершения игры", e)
+            self.logger.error("Error handling game over dialog", e)
             self.game_over_dialog_shown = False
+
+    def update_current_game_stats(self):
+        try:
+            stats = self.bot.game_stats
+            self.current_game_vars["current_score"].set(str(stats.current_score))
+            self.current_game_vars["current_time"].set(
+                f"{stats.current_game_time:.1f}s"
+            )
+            self.current_game_vars["current_jumps"].set(str(stats.current_jumps))
+            self.current_game_vars["current_ducks"].set(str(stats.current_ducks))
+        except Exception as e:
+            self.logger.error("Error updating current game stats", e)
+
+    def update_stats(self) -> None:
+        try:
+            stats = self.bot.stats
+            self.stats_vars["games_played"].set(str(int(stats.get("games_played", 0))))
+            self.stats_vars["best_score"].set(str(int(stats.get("best_score", 0))))
+            self.stats_vars["total_time"].set(f"{stats.get('total_time', 0):.1f}s")
+            self.stats_vars["total_jumps"].set(str(int(stats.get("total_jumps", 0))))
+            self.stats_vars["total_ducks"].set(str(int(stats.get("total_ducks", 0))))
+        except Exception as e:
+            self.logger.error("Error updating statistics in GUI", e)
 
     def reset_stats_with_confirmation(self):
         result = messagebox.askyesno(
-            "Подтверждение",
-            "Вы уверены, что хотите сбросить всю статистику?",
+            "Confirm Reset",
+            "Are you sure you want to reset all statistics?",
             icon="warning",
         )
         if result:
@@ -313,22 +373,15 @@ class TRexGUI:
     def on_setting_change(self, key: str, value: float) -> None:
         self.bot.settings[key] = value
 
+        if key == "confidence_threshold":
+            self.bot.object_detector.set_confidence_threshold(value)
+
     def toggle_bot(self) -> None:
         if self.bot.is_running:
             self.bot.stop_bot()
         else:
             self.game_over_dialog_shown = False
             self.bot.start_bot()
-
-    def update_stats(self) -> None:
-        try:
-            stats = self.bot.stats
-            self.stats_vars["games_played"].set(str(int(stats["games_played"])))
-            self.stats_vars["best_score"].set(str(int(stats["best_score"])))
-            self.stats_vars["total_time"].set(f"{stats['total_time']:.1f}с")
-            self.stats_vars["total_jumps"].set(str(int(stats["total_jumps"])))
-        except Exception as e:
-            self.logger.error("Ошибка обновления статистики в GUI", e)
 
     def load_settings(self) -> None:
         try:
@@ -338,15 +391,12 @@ class TRexGUI:
                     var = getattr(self, var_name)
                     var.set(value)
         except Exception as e:
-            self.logger.error("Ошибка загрузки настроек в GUI", e)
+            self.logger.error("Error loading settings in GUI", e)
 
     def on_closing(self):
         try:
             if self.bot.is_running:
                 self.bot.stop_bot()
-
-            if self.debug_shown:
-                self.debug_window.hide()
 
             self.bot.save_settings()
 
@@ -357,31 +407,29 @@ class TRexGUI:
                 pass
 
         except Exception as e:
-            self.logger.error("Ошибка при закрытии приложения", e)
+            self.logger.error("Error closing application", e)
 
     def run(self) -> None:
         try:
             template_info = self.bot.object_detector.get_template_info()
             if template_info:
-                self.logger.info(
-                    f"Загружены шаблоны: {', '.join(template_info.keys())}"
-                )
+                self.logger.info(f"Loaded templates: {', '.join(template_info.keys())}")
             else:
                 messagebox.showwarning(
-                    "Предупреждение",
-                    "Не найдено ни одного шаблона в папке images/\n"
-                    "Убедитесь, что файлы изображений находятся в папке images/",
+                    "Warning",
+                    "No templates found in images/ directory.\n"
+                    "Make sure template images are in the images/ folder.",
                 )
 
             self.root.mainloop()
 
         except Exception as e:
-            self.logger.error("Критическая ошибка в GUI", e)
-            messagebox.showerror("Ошибка", f"Критическая ошибка: {str(e)}")
+            self.logger.error("Critical GUI error", e)
+            messagebox.showerror("Error", f"Critical error: {str(e)}")
         finally:
             try:
                 if self.bot.is_running:
                     self.bot.stop_bot()
                 self.bot.save_settings()
             except Exception as e:
-                print(f"Ошибка при финальном сохранении: {e}")
+                print(f"Error during final cleanup: {e}")

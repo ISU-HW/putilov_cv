@@ -1,37 +1,37 @@
 import cv2
 import numpy as np
 import os
-import time
 from typing import Dict, List, Optional, Tuple
-from debug import Logger
+from logger import Logger
 
 
 class ObjectDetector:
     def __init__(self, logger: Logger):
         self.logger = logger
         self.templates: Dict[str, np.ndarray] = {}
-        self.template_sizes: Dict[str, Tuple[int, int]] = {}
-        self.confidence_threshold = 0.7
+        self.confidence_threshold = 0.6
+        self.low_confidence_threshold = 0.4
         self.load_templates()
 
     def load_templates(self) -> None:
         try:
             templates_path = "images"
             if not os.path.exists(templates_path):
-                self.logger.error(f"Папка {templates_path} не найдена!")
+                self.logger.error(f"Templates directory {templates_path} not found!")
                 return
 
             template_files = {
                 "trex": "trex.png",
                 "dead_trex": "dead_trex.png",
-                "trex_in_jump": "trex_in_jump.png",
-                "cactus": "cactus.png",
-                "mini_cactus": "mini_cactus.png",
-                "triple_cactus": "triple_cactus.png",
-                "triple_mini_cactus": "triple_mini_cactus.png",
-                "double_cactus": "double_cactus.png",
-                "double_mini_cactus": "double_mini_cactus.png",
+                "trex_jumping": "trex_in_jump.png",
+                "cactus_small": "mini_cactus.png",
+                "cactus_large": "cactus.png",
+                "cactus_double": "double_cactus.png",
+                "cactus_triple": "triple_cactus.png",
+                "cactus_double_small": "double_mini_cactus.png",
+                "cactus_triple_small": "triple_mini_cactus.png",
                 "pterodactyl": "pterodactyl.png",
+                "game_over": "gameover.png",
             }
 
             loaded_count = 0
@@ -41,20 +41,17 @@ class ObjectDetector:
                     template = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
                     if template is not None:
                         self.templates[obj_type] = template
-                        self.template_sizes[obj_type] = template.shape[:2]
                         loaded_count += 1
                         self.logger.info(
-                            f"Шаблон {obj_type} загружен: {template.shape}"
+                            f"Loaded template {obj_type}: {template.shape}"
                         )
                     else:
-                        self.logger.warning(
-                            f"Не удалось загрузить изображение: {filepath}"
-                        )
+                        self.logger.warning(f"Failed to load image: {filepath}")
                 else:
-                    self.logger.warning(f"Файл шаблона не найден: {filepath}")
+                    self.logger.warning(f"Template file not found: {filepath}")
 
             png_files = [f for f in os.listdir(templates_path) if f.endswith(".png")]
-            known_files = list(template_files.values()) + ["canvas.png", "gameover.png"]
+            known_files = list(template_files.values()) + ["canvas.png"]
 
             for png_file in png_files:
                 if png_file not in known_files:
@@ -63,57 +60,60 @@ class ObjectDetector:
                     template = cv2.imread(filepath, cv2.IMREAD_GRAYSCALE)
                     if template is not None:
                         self.templates[obj_type] = template
-                        self.template_sizes[obj_type] = template.shape[:2]
                         loaded_count += 1
                         self.logger.info(
-                            f"Дополнительный шаблон {obj_type} загружен: {template.shape}"
+                            f"Loaded additional template {obj_type}: {template.shape}"
                         )
 
-            self.logger.info(
-                f"Загружено {loaded_count} шаблонов из папки {templates_path}"
-            )
+            self.logger.info(f"Loaded {loaded_count} templates from {templates_path}")
 
         except Exception as e:
-            self.logger.error("Ошибка загрузки шаблонов", e)
+            self.logger.error("Error loading templates", e)
 
     def detect_objects(self, screenshot: np.ndarray) -> List[Dict]:
-        start_time = time.time()
         detected_objects = []
 
         try:
             gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
 
-            for obj_type, template in self.templates.items():
-                objects = self._detect_template_objects(
-                    gray_screenshot, obj_type, template
-                )
-                detected_objects.extend(objects)
+            # Улучшенная предобработка изображения
+            gray_screenshot = cv2.GaussianBlur(gray_screenshot, (3, 3), 0)
 
-            pterodactyls = self._detect_pterodactyl(gray_screenshot)
-            detected_objects.extend(pterodactyls)
+            obstacle_types = [
+                "cactus_small",
+                "cactus_large",
+                "cactus_double",
+                "cactus_triple",
+                "cactus_double_small",
+                "cactus_triple_small",
+                "pterodactyl",
+            ]
+
+            for obj_type in obstacle_types:
+                if obj_type in self.templates:
+                    objects = self._detect_template_objects_enhanced(
+                        gray_screenshot, obj_type, self.templates[obj_type]
+                    )
+                    detected_objects.extend(objects)
 
             detected_objects = self._filter_overlapping_objects(detected_objects)
-
-            processing_time = (time.time() - start_time) * 1000
-            if processing_time > 10:
-                self.logger.warning(
-                    f"Детекция заняла {processing_time:.1f}мс (превышен лимит 10мс)"
-                )
+            detected_objects = self._classify_pterodactyl_heights(detected_objects)
 
             return detected_objects
 
         except Exception as e:
-            self.logger.error("Ошибка детекции объектов", e)
+            self.logger.error("Error detecting objects", e)
             return []
 
-    def detect_trex_state_and_position(self, screenshot: np.ndarray) -> Optional[Dict]:
+    def detect_trex(self, screenshot: np.ndarray) -> Optional[Dict]:
         try:
             gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            gray_screenshot = cv2.GaussianBlur(gray_screenshot, (3, 3), 0)
 
             trex_states = [
                 ("dead", "dead_trex"),
-                ("jumping", "trex_in_jump"),
-                ("normal", "trex"),
+                ("jumping", "trex_jumping"),
+                ("running", "trex"),
             ]
 
             best_match = None
@@ -124,126 +124,164 @@ class ObjectDetector:
                     continue
 
                 template = self.templates[template_key]
-                result = cv2.matchTemplate(
-                    gray_screenshot, template, cv2.TM_CCOEFF_NORMED
-                )
-                _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
-                if max_val > self.confidence_threshold and max_val > best_confidence:
-                    template_h, template_w = template.shape
-                    x, y = max_loc
+                # Мульти-масштабное сопоставление
+                for scale in [0.8, 0.9, 1.0, 1.1, 1.2]:
+                    resized_template = cv2.resize(template, None, fx=scale, fy=scale)
 
-                    best_match = {
-                        "state": state,
-                        "bbox": {
+                    if (
+                        resized_template.shape[0] > gray_screenshot.shape[0]
+                        or resized_template.shape[1] > gray_screenshot.shape[1]
+                    ):
+                        continue
+
+                    result = cv2.matchTemplate(
+                        gray_screenshot, resized_template, cv2.TM_CCOEFF_NORMED
+                    )
+                    _, max_val, _, max_loc = cv2.minMaxLoc(result)
+
+                    if (
+                        max_val > self.low_confidence_threshold
+                        and max_val > best_confidence
+                    ):
+                        template_h, template_w = resized_template.shape
+                        x, y = max_loc
+
+                        best_match = {
+                            "state": state,
                             "x": x,
                             "y": y,
                             "width": template_w,
                             "height": template_h,
-                            "x2": x + template_w,
-                            "y2": y + template_h,
-                        },
-                        "confidence": float(max_val),
-                        "center_x": x + template_w // 2,
-                        "center_y": y + template_h // 2,
-                    }
-                    best_confidence = max_val
+                            "center_x": x + template_w // 2,
+                            "center_y": y + template_h // 2,
+                            "bottom_y": y
+                            + template_h
+                            + (5 if template_key == "trex" else 0),
+                            "confidence": float(max_val),
+                            "scale": scale,
+                        }
+                        best_confidence = max_val
 
             return best_match
 
         except Exception as e:
-            self.logger.error("Ошибка детекции состояния T-Rex", e)
+            self.logger.error("Error detecting T-Rex", e)
             return None
 
-    def _detect_template_objects(
+    def detect_game_over(self, screenshot: np.ndarray) -> bool:
+        try:
+            if "game_over" not in self.templates:
+                return False
+
+            gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            template = self.templates["game_over"]
+
+            # Проверяем разные части экрана для game over
+            regions = [
+                gray_screenshot,  # Весь экран
+                gray_screenshot[:100, :],  # Верхняя часть
+                gray_screenshot[25:125, :],  # Средняя часть
+            ]
+
+            for region in regions:
+                if (
+                    region.shape[0] < template.shape[0]
+                    or region.shape[1] < template.shape[1]
+                ):
+                    continue
+
+                result = cv2.matchTemplate(region, template, cv2.TM_CCOEFF_NORMED)
+                _, max_val, _, _ = cv2.minMaxLoc(result)
+
+                if max_val > 0.7:
+                    return True
+
+            return False
+
+        except Exception as e:
+            self.logger.error("Error detecting game over", e)
+            return False
+
+    def _detect_template_objects_enhanced(
         self, gray_image: np.ndarray, obj_type: str, template: np.ndarray
     ) -> List[Dict]:
         objects = []
 
         try:
-            result = cv2.matchTemplate(gray_image, template, cv2.TM_CCOEFF_NORMED)
-            locations = np.where(result >= self.confidence_threshold)
-
+            img_h, img_w = gray_image.shape
             template_h, template_w = template.shape
 
-            for pt in zip(*locations[::-1]):
-                x, y = pt
-                confidence = result[y, x]
+            if template_h > img_h or template_w > img_w:
+                return objects
 
-                bbox = {
-                    "x": x,
-                    "y": y,
-                    "width": template_w,
-                    "height": template_h,
-                    "x2": x + template_w,
-                    "y2": y + template_h,
-                }
+            # Используем разные пороги для разных типов объектов
+            threshold = self.confidence_threshold
+            if "pterodactyl" in obj_type:
+                threshold = 0.5  # Птеродактили сложнее обнаружить
+            elif "cactus" in obj_type:
+                threshold = 0.65  # Кактусы проще
 
-                objects.append(
-                    {
-                        "type": obj_type,
-                        "bbox": bbox,
-                        "confidence": float(confidence),
-                        "is_threat": self._is_threat(obj_type),
-                        "center_x": x + template_w // 2,
-                        "center_y": y + template_h // 2,
-                    }
+            # Мульти-масштабное обнаружение
+            for scale in [0.8, 0.9, 1.0, 1.1, 1.2]:
+                resized_template = cv2.resize(template, None, fx=scale, fy=scale)
+
+                if (
+                    resized_template.shape[0] > img_h
+                    or resized_template.shape[1] > img_w
+                ):
+                    continue
+
+                result = cv2.matchTemplate(
+                    gray_image, resized_template, cv2.TM_CCOEFF_NORMED
                 )
+                locations = np.where(result >= threshold)
+
+                for pt in zip(*locations[::-1]):
+                    x, y = pt
+                    confidence = result[y, x]
+
+                    scaled_w = int(template_w * scale)
+                    scaled_h = int(template_h * scale)
+
+                    obj_data = {
+                        "type": obj_type,
+                        "x": x,
+                        "y": y,
+                        "width": scaled_w,
+                        "height": scaled_h,
+                        "center_x": x + scaled_w // 2,
+                        "center_y": y + scaled_h // 2,
+                        "confidence": float(confidence),
+                        "is_threat": True,
+                        "scale": scale,
+                    }
+
+                    if "pterodactyl" in obj_type:
+                        obj_data["is_flying"] = True
+
+                    objects.append(obj_data)
 
         except Exception as e:
-            self.logger.error(f"Ошибка детекции шаблона {obj_type}", e)
+            self.logger.error(f"Error detecting template {obj_type}", e)
 
         return objects
 
-    def _detect_pterodactyl(self, gray_image: np.ndarray) -> List[Dict]:
-        objects = []
+    def _classify_pterodactyl_heights(self, objects: List[Dict]) -> List[Dict]:
+        for obj in objects:
+            if "pterodactyl" in obj["type"]:
+                y_pos = obj["center_y"]
 
-        try:
-
-            if "pterodactyl" in self.templates:
-                return objects
-
-            _, thresh = cv2.threshold(gray_image, 127, 255, cv2.THRESH_BINARY_INV)
-
-            contours, _ = cv2.findContours(
-                thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-            )
-
-            for contour in contours:
-                area = cv2.contourArea(contour)
-
-                if 200 < area < 2000:
-                    x, y, w, h = cv2.boundingRect(contour)
-                    aspect_ratio = w / h if h > 0 else 0
-
-                    if 1.5 < aspect_ratio < 4.0:
-                        roi = thresh[y : y + h, x : x + w]
-                        if roi.size > 0:
-                            density = cv2.countNonZero(roi) / (w * h)
-
-                            if 0.3 < density < 0.8:
-                                bbox = {
-                                    "x": x,
-                                    "y": y,
-                                    "width": w,
-                                    "height": h,
-                                    "x2": x + w,
-                                    "y2": y + h,
-                                }
-
-                                objects.append(
-                                    {
-                                        "type": "pterodactyl_detected",
-                                        "bbox": bbox,
-                                        "confidence": float(density),
-                                        "is_threat": True,
-                                        "center_x": x + w // 2,
-                                        "center_y": y + h // 2,
-                                    }
-                                )
-
-        except Exception as e:
-            self.logger.error("Ошибка детекции птеродактиля", e)
+                # Классификация высоты птеродактиля
+                if y_pos < 40:
+                    obj["height_level"] = "high"
+                    obj["duck_required"] = False
+                elif y_pos < 70:
+                    obj["height_level"] = "medium"
+                    obj["duck_required"] = True  # Можно пригнуться или прыгнуть
+                else:
+                    obj["height_level"] = "low"
+                    obj["duck_required"] = True
 
         return objects
 
@@ -258,7 +296,7 @@ class ObjectDetector:
             is_overlapping = False
 
             for filtered_obj in filtered_objects:
-                if self._calculate_iou(obj["bbox"], filtered_obj["bbox"]) > 0.3:
+                if self._calculate_overlap(obj, filtered_obj) > 0.2:
                     is_overlapping = True
                     break
 
@@ -267,21 +305,19 @@ class ObjectDetector:
 
         return filtered_objects
 
-    def _calculate_iou(self, bbox1: Dict, bbox2: Dict) -> float:
+    def _calculate_overlap(self, obj1: Dict, obj2: Dict) -> float:
         try:
-            x1 = max(bbox1["x"], bbox2["x"])
-            y1 = max(bbox1["y"], bbox2["y"])
-            x2 = min(bbox1["x2"], bbox2["x2"])
-            y2 = min(bbox1["y2"], bbox2["y2"])
+            x1 = max(obj1["x"], obj2["x"])
+            y1 = max(obj1["y"], obj2["y"])
+            x2 = min(obj1["x"] + obj1["width"], obj2["x"] + obj2["width"])
+            y2 = min(obj1["y"] + obj1["height"], obj2["y"] + obj2["height"])
 
             if x2 <= x1 or y2 <= y1:
                 return 0.0
 
             intersection = (x2 - x1) * (y2 - y1)
-
-            area1 = bbox1["width"] * bbox1["height"]
-            area2 = bbox2["width"] * bbox2["height"]
-
+            area1 = obj1["width"] * obj1["height"]
+            area2 = obj2["width"] * obj2["height"]
             union = area1 + area2 - intersection
 
             return intersection / union if union > 0 else 0.0
@@ -289,30 +325,17 @@ class ObjectDetector:
         except Exception:
             return 0.0
 
-    def _is_threat(self, obj_type: str) -> bool:
-
-        safe_objects = {
-            "trex",
-            "dead_trex",
-            "trex_in_jump",
-            "canvas",
-        }
-
-        if obj_type in safe_objects:
-            return False
-
-        return True
-
     def set_confidence_threshold(self, threshold: float) -> None:
         self.confidence_threshold = max(0.1, min(0.99, threshold))
-        self.logger.info(f"Порог уверенности установлен: {self.confidence_threshold}")
+        self.logger.info(f"Confidence threshold set to: {self.confidence_threshold}")
 
     def get_template_info(self) -> Dict[str, Dict]:
         info = {}
         for obj_type, template in self.templates.items():
             info[obj_type] = {
                 "shape": template.shape,
-                "is_threat": self._is_threat(obj_type),
+                "is_threat": obj_type
+                not in {"trex", "dead_trex", "trex_jumping", "game_over"},
                 "loaded": True,
             }
         return info

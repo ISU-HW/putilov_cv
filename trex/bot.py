@@ -7,18 +7,19 @@ import os
 import keyboard
 import pyautogui
 import json
-from typing import Dict, Optional
-from debug import Logger
-from detector import ObjectDetector
-from calculate import TrajectoryCalculator
+from typing import Dict, List, Optional
 from enum import Enum
+
+from logger import Logger
+from detector import ObjectDetector
+from trajectory import TrajectoryCalculator
 
 
 class BotState(Enum):
     READY = "ready"
-    SEARCHING_DINO = "searching_dino"
-    DINO_FOUND = "dino_found"
-    DINO_NOT_FOUND = "dino_not_found"
+    SEARCHING_CANVAS = "searching_canvas"
+    CANVAS_FOUND = "canvas_found"
+    CANVAS_NOT_FOUND = "canvas_not_found"
     WAITING_FOR_GAME = "waiting_for_game"
     PLAYING = "playing"
     GAME_OVER = "game_over"
@@ -28,109 +29,72 @@ class BotState(Enum):
 
 class GameStats:
     def __init__(self):
-        self.current_game_time = 0
+        self.current_game_time = 0.0
         self.current_jumps = 0
+        self.current_ducks = 0
         self.current_score = 0
         self.is_game_over = False
-        self.game_over_reason = ""
+        self.actions_taken = []
 
 
 class TRexBot:
     def __init__(self, logger: Logger):
         self.logger = logger
-        self.is_running: bool = False
+        self.is_running = False
         self.bot_thread: Optional[threading.Thread] = None
         self.start_time: Optional[float] = None
         self.capture_area: Optional[Dict] = None
-        self.dino_template: Optional[np.ndarray] = None
+        self.canvas_template: Optional[np.ndarray] = None
+        self.canvas_width: int = 0
+        self.canvas_height: int = 0
 
         self.state = BotState.READY
-        self.status_message = "Готов к работе"
+        self.status_message = "Ready to start"
         self.error_message = ""
-
         self.game_stats = GameStats()
 
         self.object_detector = ObjectDetector(logger)
         self.trajectory_calculator = TrajectoryCalculator(logger)
 
-        self.last_detected_objects = []
-        self.last_trajectory = []
-        self.last_dino_info = None
+        # Отслеживание действий
+        self.last_action_time = 0
+        self.action_cooldown = 0.05
+        self.duck_duration = 0.3
+        self.is_ducking = False
+        self.duck_start_time = 0
 
-        self.default_settings: Dict[str, float] = {
+        self.settings = {
             "jump_delay": 0.1,
             "scan_delay": 0.01,
-            "confidence_threshold": 0.7,
-            "obstacle_density": 0.05,
-            "capture_width": 600,
-            "capture_height": 150,
-            "gameover_confidence": 0.8,
+            "confidence_threshold": 0.6,
+            "jump_sensitivity": 0.05,
+            "gameover_confidence": 0.7,
+            "duck_duration": 0.3,
         }
 
-        self.settings: Dict[str, float] = self.default_settings.copy()
-        self.stats: Dict[str, float] = {
+        self.stats = {
             "games_played": 0,
             "best_score": 0,
             "total_time": 0,
             "total_jumps": 0,
+            "total_ducks": 0,
         }
 
         self.initialize_files()
-        self.validate_and_fix_settings()
-
-    def validate_and_fix_settings(self) -> None:
-        try:
-            self.settings["capture_width"] = max(
-                100, int(self.settings["capture_width"])
-            )
-            self.settings["capture_height"] = max(
-                50, int(self.settings["capture_height"])
-            )
-
-            self.settings["jump_delay"] = max(
-                0.01, min(1.0, float(self.settings["jump_delay"]))
-            )
-            self.settings["scan_delay"] = max(
-                0.001, min(0.5, float(self.settings["scan_delay"]))
-            )
-            self.settings["confidence_threshold"] = max(
-                0.1, min(0.99, float(self.settings["confidence_threshold"]))
-            )
-            self.settings["obstacle_density"] = max(
-                0.001, min(0.5, float(self.settings["obstacle_density"]))
-            )
-
-            self.logger.info("Настройки проверены и исправлены")
-
-        except Exception as e:
-            self.logger.error("Ошибка валидации настроек", e)
-            self.settings = self.default_settings.copy()
-            self.logger.warning("Настройки сброшены к значениям по умолчанию")
 
     def initialize_files(self) -> None:
         try:
             os.makedirs("images", exist_ok=True)
-            self.logger.info("Папка images создана/проверена")
+            os.makedirs("debug_screenshots", exist_ok=True)
+            self.logger.info("Images and debug directories created/verified")
 
             if not os.path.exists("images/canvas.png"):
-                self.logger.warning("Файл images/canvas.png не найден!")
-                raise FileNotFoundError("Шаблон динозавра не найден")
+                self.logger.error("Canvas template (canvas.png) not found!")
+                self.state = BotState.ERROR
+                self.error_message = "Canvas template not found"
+                return
             else:
-                self.load_dino_template()
-
-            if os.path.exists("images/gameover.png"):
-                self.gameover_template = cv2.imread(
-                    "images/gameover.png", cv2.IMREAD_GRAYSCALE
-                )
-                if self.gameover_template is not None:
-                    self.logger.info(
-                        f"Шаблон 'Game Over' загружен: {self.gameover_template.shape}"
-                    )
-                else:
-                    self.logger.warning("Не удалось загрузить шаблон 'Game Over'")
-            else:
-                self.logger.warning("Файл images/gameover.png не найден!")
-                self.gameover_template = None
+                self.load_canvas_template()
 
             if os.path.exists("trex_settings.json"):
                 self.load_settings()
@@ -143,72 +107,107 @@ class TRexBot:
                 self.save_stats()
 
         except Exception as e:
-            self.logger.error("Ошибка инициализации файлов", e)
+            self.logger.error("Error initializing files", e)
             self.state = BotState.ERROR
-            self.error_message = f"Ошибка инициализации: {str(e)}"
+            self.error_message = f"Initialization error: {str(e)}"
 
-    def load_dino_template(self) -> None:
+    def load_canvas_template(self) -> None:
         try:
-            self.dino_template = cv2.imread("images/canvas.png", cv2.IMREAD_GRAYSCALE)
-            if self.dino_template is not None:
+            self.canvas_template = cv2.imread("images/canvas.png", cv2.IMREAD_GRAYSCALE)
+            if self.canvas_template is not None:
+                self.canvas_height, self.canvas_width = self.canvas_template.shape
                 self.logger.info(
-                    f"Шаблон динозавра загружен: {self.dino_template.shape}"
+                    f"Canvas template loaded successfully: {self.canvas_width}x{self.canvas_height}"
                 )
-            else:
-                raise ValueError("Не удалось загрузить изображение")
-        except Exception as e:
-            self.logger.error("Ошибка загрузки шаблона динозавра", e)
 
-    def find_dino_position(self, screenshot: np.ndarray) -> Optional[Dict]:
-        if self.dino_template is None:
-            self.logger.warning("Шаблон динозавра не загружен")
+                # Сохраняем отладочную информацию о template
+                debug_filename = "debug_screenshots/canvas_template.png"
+                cv2.imwrite(debug_filename, self.canvas_template)
+                self.logger.info(f"Canvas template saved to: {debug_filename}")
+
+            else:
+                raise ValueError("Failed to load canvas template image")
+        except Exception as e:
+            self.logger.error("Error loading canvas template", e)
+            self.canvas_template = None
+
+    def find_canvas_area(self, screenshot: np.ndarray) -> Optional[Dict]:
+        if not hasattr(self, "canvas_template") or self.canvas_template is None:
+            self.logger.error("Canvas template not loaded")
             return None
 
         try:
             gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
+            img_h, img_w = gray_screenshot.shape
+            template_h, template_w = self.canvas_template.shape
+
+            self.logger.info(f"Screenshot size: {img_w}x{img_h}")
+            self.logger.info(f"Canvas template size: {template_w}x{template_h}")
+
+            if template_h > img_h or template_w > img_w:
+                self.logger.warning(
+                    f"Canvas template ({template_w}x{template_h}) is larger than image ({img_w}x{img_h})"
+                )
+                return None
+
+            # Ищем точное совпадение canvas.png на экране
             result = cv2.matchTemplate(
-                gray_screenshot, self.dino_template, cv2.TM_CCOEFF_NORMED
+                gray_screenshot, self.canvas_template, cv2.TM_CCOEFF_NORMED
             )
             _, max_val, _, max_loc = cv2.minMaxLoc(result)
 
-            if max_val > self.settings["confidence_threshold"]:
-                x, y = max_loc
-                template_h, _ = self.dino_template.shape
-                position = {"x": x, "y": y + template_h, "confidence": max_val}
-                return position
+            self.logger.info(
+                f"Template matching result: confidence={max_val:.3f}, location={max_loc}"
+            )
+
+            # Попробуем разные пороги
+            thresholds = [0.95, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
+
+            for threshold in thresholds:
+                if max_val > threshold:
+                    x, y = max_loc
+                    self.logger.info(
+                        f"Canvas found with threshold {threshold} at ({x}, {y})"
+                    )
+                    return {
+                        "x": x,
+                        "y": y,
+                        "width": template_w,
+                        "height": template_h,
+                        "confidence": max_val,
+                    }
+
+            self.logger.warning(
+                f"Canvas not found with any threshold. Best match: {max_val:.3f} at {max_loc}"
+            )
+
         except Exception as e:
-            self.logger.error("Ошибка поиска динозавра", e)
+            self.logger.error("Error finding canvas area", e)
+
         return None
 
-    def detect_gameover(self, screenshot: np.ndarray) -> bool:
-        if self.gameover_template is None:
-            return False
+    def set_manual_capture_area(self, x: int, y: int, width: int, height: int) -> None:
+        """Ручная установка области захвата для отладки"""
+        self.capture_area = {"top": y, "left": x, "width": width, "height": height}
+        self.logger.info(f"Manual capture area set: {self.capture_area}")
 
+    def test_canvas_matching(self) -> None:
+        """Тестирует поиск canvas на всех мониторах"""
         try:
-            gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
-            result = cv2.matchTemplate(
-                gray_screenshot, self.gameover_template, cv2.TM_CCOEFF_NORMED
-            )
-            _, max_val, _, max_loc = cv2.minMaxLoc(result)
-            return max_val > self.settings["gameover_confidence"]
+            with mss.mss() as sct:
+                for i, monitor in enumerate(sct.monitors[1:], 1):
+                    screenshot = np.array(sct.grab(monitor))[:, :, :3]
+
+                    debug_filename = f"debug_screenshots/test_monitor_{i}.png"
+                    cv2.imwrite(
+                        debug_filename, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+                    )
+
+                    canvas_area = self.find_canvas_area(screenshot)
+                    self.logger.info(f"Monitor {i}: canvas_area = {canvas_area}")
+
         except Exception as e:
-            self.logger.error("Ошибка детекции gameover", e)
-            return False
-
-    def calculate_capture_area(self, dino_pos: Dict, monitor: Dict) -> Dict:
-        area = {
-            "top": int(dino_pos["y"] - self.settings["capture_height"]),
-            "left": int(dino_pos["x"]),
-            "width": int(self.settings["capture_width"]),
-            "height": int(self.settings["capture_height"]),
-        }
-
-        area["top"] = max(0, area["top"])
-        area["left"] = max(0, area["left"])
-        area["width"] = max(1, area["width"])
-        area["height"] = max(1, area["height"])
-
-        return area
+            self.logger.error("Error in test_canvas_matching", e)
 
     def start_bot(self) -> None:
         if self.is_running:
@@ -216,52 +215,55 @@ class TRexBot:
 
         try:
             self.is_running = True
-            self.state = BotState.SEARCHING_DINO
-            self.status_message = "Запуск бота..."
+            self.state = BotState.SEARCHING_CANVAS
+            self.status_message = "Starting bot..."
             self.game_stats = GameStats()
 
-            self.logger.info("Запуск бота")
+            self.logger.info("=== STARTING NEW CANVAS-BASED BOT ===")
             self.bot_thread = threading.Thread(target=self.run_bot, daemon=True)
             self.bot_thread.start()
+
         except Exception as e:
-            self.logger.error("Ошибка запуска бота", e)
+            self.logger.error("Error starting bot", e)
             self.state = BotState.ERROR
-            self.error_message = f"Ошибка запуска: {str(e)}"
+            self.error_message = f"Start error: {str(e)}"
             self.is_running = False
 
     def stop_bot(self) -> None:
         try:
             self.is_running = False
             self.state = BotState.STOPPED
-            self.status_message = "Остановлен"
-            self.logger.info("Бот остановлен")
+            self.status_message = "Stopped"
+
+            # Завершаем пригибание если активно
+            if self.is_ducking:
+                pyautogui.keyUp("down")
+                self.is_ducking = False
+
+            self.logger.info("Bot stopped")
         except Exception as e:
-            self.logger.error("Ошибка остановки бота", e)
+            self.logger.error("Error stopping bot", e)
 
     def run_bot(self) -> None:
         try:
-            self.logger.info("Начинаем поиск экранов")
-            self.state = BotState.SEARCHING_DINO
-            self.status_message = "Поиск динозавра..."
+            self.logger.info("=== SEARCHING FOR GAME CANVAS ===")
+            self.state = BotState.SEARCHING_CANVAS
+            self.status_message = "Searching for game canvas..."
 
             search_result = self._capture_screens()
             if not search_result:
-                self.logger.error("Динозавр не найден ни на одном экране")
-                self.state = BotState.DINO_NOT_FOUND
-                self.status_message = "Дино не найден"
+                self.logger.error("Game canvas not found on any screen")
+                self.state = BotState.CANVAS_NOT_FOUND
+                self.status_message = "Game canvas not found"
                 return
 
-            self.capture_area = self.calculate_capture_area(
-                search_result["dino_pos"], search_result["monitor"]
-            )
+            self.capture_area = search_result["capture_area"]
+            self.logger.info(f"=== CAPTURE AREA SET TO: {self.capture_area} ===")
 
-            self.logger.info("Динозавр найден, ожидание запуска игры")
-            self.state = BotState.DINO_FOUND
-            self.status_message = "Дино найден"
+            self.state = BotState.CANVAS_FOUND
+            self.status_message = "Game canvas found, press SPACE to start"
 
             self.state = BotState.WAITING_FOR_GAME
-            self.status_message = "Нажмите ПРОБЕЛ для начала игры"
-
             while self.is_running and not keyboard.is_pressed("space"):
                 time.sleep(0.1)
 
@@ -270,19 +272,40 @@ class TRexBot:
 
             self.start_time = time.time()
             self.game_stats = GameStats()
-            self.logger.info("Игра началась")
+            self.logger.info("Game started")
             self.state = BotState.PLAYING
-            self.status_message = "Играет"
+            self.status_message = "Playing"
 
             while self.is_running:
                 if keyboard.is_pressed("esc"):
-                    self.logger.info("Выход по ESC")
+                    self.logger.info("Exit requested (ESC)")
                     break
 
                 try:
                     with mss.mss() as sct:
                         screenshot = np.array(sct.grab(self.capture_area))
 
+                    if screenshot.shape[1] < 50 or screenshot.shape[0] < 50:
+                        self.logger.error(f"Screenshot too small: {screenshot.shape}")
+                        time.sleep(0.5)
+                        continue
+
+                    # Отладочные скриншоты
+                    frame_count = getattr(self, "frame_count", 0)
+                    self.frame_count = frame_count + 1
+
+                    if self.frame_count <= 5 or self.frame_count % 100 == 0:
+                        debug_filename = (
+                            f"debug_screenshots/game_frame_{self.frame_count}.png"
+                        )
+                        cv2.imwrite(
+                            debug_filename, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+                        )
+                        self.logger.info(
+                            f"Saved game screenshot: {debug_filename} (shape: {screenshot.shape})"
+                        )
+
+                    # Обновляем статистику
                     self.game_stats.current_game_time = (
                         time.time() - self.start_time if self.start_time else 0
                     )
@@ -290,62 +313,96 @@ class TRexBot:
                         self.game_stats.current_game_time * 10
                     )
 
-                    if self.detect_gameover(screenshot):
+                    # Проверяем Game Over
+                    if self.object_detector.detect_game_over(screenshot):
                         self.handle_game_over()
                         break
 
-                    detected_objects = self.object_detector.detect_objects(screenshot)
-                    self.last_detected_objects = detected_objects
+                    # Обнаруживаем T-Rex
+                    trex_info = self.object_detector.detect_trex(screenshot)
 
-                    trex_position = (50, 93)
+                    if trex_info:
+                        # Обнаруживаем препятствия
+                        obstacles = self.object_detector.detect_objects(screenshot)
 
-                    threats = [
-                        obj for obj in detected_objects if obj.get("is_threat", False)
-                    ]
-
-                    if threats:
-
-                        should_jump, reason = self.trajectory_calculator.should_jump(
-                            trex_position, threats, self.game_stats.current_game_time
-                        )
-
-                        if should_jump:
-                            trajectory = (
-                                self.trajectory_calculator.calculate_jump_trajectory(
-                                    trex_position[0],
-                                    trex_position[1],
+                        if obstacles:
+                            action, reason = (
+                                self.trajectory_calculator.should_jump_or_duck(
+                                    trex_info,
+                                    obstacles,
                                     self.game_stats.current_game_time,
                                 )
                             )
-                            self.last_trajectory = trajectory
-                        else:
-                            self.last_trajectory = []
 
-                        if should_jump:
-                            pyautogui.press("space")
-                            self.game_stats.current_jumps += 1
-                            self.logger.info(
-                                f"Прыжок №{self.game_stats.current_jumps}: {reason}"
-                            )
-                            time.sleep(self.settings["jump_delay"])
+                            if action != "none":
+                                self.execute_action(action, reason)
+
+                    # Обрабатываем продолжающееся пригибание
+                    self.handle_ducking()
 
                     time.sleep(self.settings["scan_delay"])
 
                 except Exception as e:
-                    self.logger.error(f"Ошибка в основном цикле бота: {str(e)}", e)
+                    self.logger.error(f"Error in main game loop: {str(e)}", e)
                     time.sleep(0.5)
 
         except Exception as e:
-            self.logger.error("Критическая ошибка в основном цикле бота", e)
+            self.logger.error("Critical error in bot main loop", e)
             self.state = BotState.ERROR
-            self.error_message = f"Ошибка: {str(e)}"
+            self.error_message = f"Error: {str(e)}"
         finally:
             if self.is_running:
                 self.stop_bot()
 
+    def execute_action(self, action: str, reason: str) -> None:
+        try:
+            current_time = time.time()
+
+            if current_time - self.last_action_time < self.action_cooldown:
+                return
+
+            if action == "jump":
+                pyautogui.press("space")
+                self.game_stats.current_jumps += 1
+                self.logger.info(f"Jump #{self.game_stats.current_jumps}: {reason}")
+
+            elif action == "duck":
+                pyautogui.keyDown("down")
+                self.is_ducking = True
+                self.duck_start_time = current_time
+                self.game_stats.current_ducks += 1
+                self.logger.info(f"Duck #{self.game_stats.current_ducks}: {reason}")
+
+            self.last_action_time = current_time
+            self.game_stats.actions_taken.append(
+                {
+                    "action": action,
+                    "time": self.game_stats.current_game_time,
+                    "reason": reason,
+                }
+            )
+
+        except Exception as e:
+            self.logger.error(f"Error executing action {action}", e)
+
+    def handle_ducking(self) -> None:
+        if self.is_ducking:
+            current_time = time.time()
+            if current_time - self.duck_start_time >= self.settings["duck_duration"]:
+                try:
+                    pyautogui.keyUp("down")
+                    self.is_ducking = False
+                except Exception as e:
+                    self.logger.error("Error ending duck", e)
+                    self.is_ducking = False
+
     def handle_game_over(self):
         try:
-            self.logger.info("Обнаружен экран 'Game Over'")
+            self.logger.info("Game Over detected")
+
+            if self.is_ducking:
+                pyautogui.keyUp("down")
+                self.is_ducking = False
 
             self.stats.update(
                 {
@@ -354,6 +411,8 @@ class TRexBot:
                     + self.game_stats.current_game_time,
                     "total_jumps": self.stats["total_jumps"]
                     + self.game_stats.current_jumps,
+                    "total_ducks": self.stats["total_ducks"]
+                    + self.game_stats.current_ducks,
                     "best_score": max(
                         self.stats["best_score"], self.game_stats.current_score
                     ),
@@ -361,101 +420,142 @@ class TRexBot:
             )
 
             self.logger.info(
-                f"Игра завершена. Время: {self.game_stats.current_game_time:.1f}с, "
-                f"Прыжков: {self.game_stats.current_jumps}, Счёт: {self.game_stats.current_score}"
+                f"Game finished. Time: {self.game_stats.current_game_time:.1f}s, "
+                f"Jumps: {self.game_stats.current_jumps}, "
+                f"Ducks: {self.game_stats.current_ducks}, "
+                f"Score: {self.game_stats.current_score}"
             )
 
             self.state = BotState.GAME_OVER
-            self.status_message = (
-                f"Игра окончена. Счёт: {self.game_stats.current_score}"
-            )
+            self.status_message = f"Game Over. Score: {self.game_stats.current_score}"
             self.game_stats.is_game_over = True
             self.save_stats()
 
         except Exception as e:
-            self.logger.error("Ошибка обработки завершения игры", e)
+            self.logger.error("Error handling game over", e)
 
     def restart_game(self):
         try:
+            if self.is_ducking:
+                pyautogui.keyUp("down")
+                self.is_ducking = False
+
             pyautogui.press("space")
+
             self.game_stats = GameStats()
             self.start_time = time.time()
             self.state = BotState.PLAYING
-            self.status_message = "Играет"
-            self.logger.info("Игра перезапущена")
+            self.status_message = "Playing"
+            self.logger.info("Game restarted")
+
         except Exception as e:
-            self.logger.error("Ошибка перезапуска игры", e)
+            self.logger.error("Error restarting game", e)
 
     def _capture_screens(self) -> Optional[Dict]:
         try:
             with mss.mss() as sct:
                 monitors = sct.monitors[1:]
-                self.logger.info(f"Найдено {len(monitors)} мониторов")
+                self.logger.info(f"Found {len(monitors)} monitors")
 
                 for i, monitor in enumerate(monitors, 1):
-                    self.status_message = f"Поиск динозавра на экране {i}..."
+                    self.status_message = f"Searching canvas on screen {i}..."
+                    self.logger.info(f"Monitor {i}: {monitor}")
+
                     screenshot = np.array(sct.grab(monitor))[:, :, :3]
-                    dino_pos = self.find_dino_position(screenshot)
-                    if dino_pos:
-                        dino_pos["x"] += monitor["left"]
-                        dino_pos["y"] += monitor["top"]
-                        self.logger.info(f"Динозавр найден на мониторе {i}")
+
+                    # Сохраняем отладочный скриншот полного экрана
+                    debug_filename = f"debug_screenshots/monitor_{i}_full.png"
+                    cv2.imwrite(
+                        debug_filename, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+                    )
+                    self.logger.info(f"Saved debug screenshot: {debug_filename}")
+
+                    canvas_area = self.find_canvas_area(screenshot)
+
+                    if canvas_area:
+                        # Преобразуем в глобальные координаты
+                        global_canvas_area = {
+                            "top": canvas_area["y"] + monitor["top"],
+                            "left": canvas_area["x"] + monitor["left"],
+                            "width": canvas_area["width"],
+                            "height": canvas_area["height"],
+                        }
+
+                        self.logger.info(f"Canvas found on monitor {i}")
+                        self.logger.info(f"Local canvas area: {canvas_area}")
+                        self.logger.info(f"Global capture area: {global_canvas_area}")
+
+                        # Отмечаем найденную область
+                        debug_screenshot = screenshot.copy()
+                        cv2.rectangle(
+                            debug_screenshot,
+                            (canvas_area["x"], canvas_area["y"]),
+                            (
+                                canvas_area["x"] + canvas_area["width"],
+                                canvas_area["y"] + canvas_area["height"],
+                            ),
+                            (0, 255, 0),
+                            2,
+                        )
+                        debug_filename = (
+                            f"debug_screenshots/monitor_{i}_canvas_found.png"
+                        )
+                        cv2.imwrite(
+                            debug_filename,
+                            cv2.cvtColor(debug_screenshot, cv2.COLOR_RGB2BGR),
+                        )
+                        self.logger.info(
+                            f"Saved canvas area screenshot: {debug_filename}"
+                        )
+
                         return {
-                            "dino_pos": dino_pos,
+                            "capture_area": global_canvas_area,
                             "monitor": monitor,
                             "screenshot": screenshot,
                         }
-                self.logger.warning("Динозавр не найден ни на одном мониторе")
-                return None
-        except Exception as e:
-            self.logger.error("Ошибка захвата экранов", e)
-            self.state = BotState.ERROR
-            self.error_message = f"Ошибка захвата: {str(e)}"
-            return None
 
-    def get_debug_info(self) -> Dict:
-        return {
-            "capture_area": self.capture_area,
-            "detected_objects": self.last_detected_objects,
-            "trajectory": self.last_trajectory,
-            "dino_info": self.last_dino_info,
-            "should_show": self.state
-            in [BotState.DINO_FOUND, BotState.WAITING_FOR_GAME, BotState.PLAYING],
-        }
+                self.logger.warning("Canvas not found on any monitor")
+                return None
+
+        except Exception as e:
+            self.logger.error("Error capturing screens", e)
+            self.state = BotState.ERROR
+            self.error_message = f"Screen capture error: {str(e)}"
+            return None
 
     def save_settings(self) -> None:
         try:
             with open("trex_settings.json", "w", encoding="utf-8") as f:
                 json.dump(self.settings, f, indent=2, ensure_ascii=False)
-            self.logger.info("Настройки сохранены")
+            self.logger.info("Settings saved")
         except Exception as e:
-            self.logger.error("Ошибка сохранения настроек", e)
+            self.logger.error("Error saving settings", e)
 
     def load_settings(self) -> None:
         try:
             with open("trex_settings.json", "r", encoding="utf-8") as f:
                 loaded_settings = json.load(f)
                 self.settings.update(loaded_settings)
-            self.validate_and_fix_settings()
-            self.logger.info("Настройки загружены")
+            self.logger.info("Settings loaded")
         except Exception as e:
-            self.logger.error("Ошибка загрузки настроек", e)
+            self.logger.error("Error loading settings", e)
 
     def save_stats(self) -> None:
         try:
             with open("trex_stats.json", "w", encoding="utf-8") as f:
                 json.dump(self.stats, f, indent=2, ensure_ascii=False)
+            self.logger.info("Statistics saved")
         except Exception as e:
-            self.logger.error("Ошибка сохранения статистики", e)
+            self.logger.error("Error saving statistics", e)
 
     def load_stats(self) -> None:
         try:
             with open("trex_stats.json", "r", encoding="utf-8") as f:
                 loaded_stats = json.load(f)
                 self.stats.update(loaded_stats)
-            self.logger.info("Статистика загружена")
+            self.logger.info("Statistics loaded")
         except Exception as e:
-            self.logger.error("Ошибка загрузки статистики", e)
+            self.logger.error("Error loading statistics", e)
 
     def reset_stats(self) -> None:
         try:
@@ -464,8 +564,9 @@ class TRexBot:
                 "best_score": 0,
                 "total_time": 0,
                 "total_jumps": 0,
+                "total_ducks": 0,
             }
             self.save_stats()
-            self.logger.info("Статистика сброшена")
+            self.logger.info("Statistics reset")
         except Exception as e:
-            self.logger.error("Ошибка сброса статистики", e)
+            self.logger.error("Error resetting statistics", e)
