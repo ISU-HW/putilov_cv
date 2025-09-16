@@ -21,7 +21,6 @@ class TRexGUI:
         self.bot = TRexBot(self.logger)
 
         self.last_bot_state = BotState.READY
-        self.game_over_dialog_shown = False
 
         self.create_widgets()
         self.load_settings()
@@ -248,7 +247,7 @@ class TRexGUI:
         # Info label
         info_label = tk.Label(
             main_frame,
-            text="v2.0: Added duck action for pterodactyls",
+            text="v2.0: Auto-restart enabled. Bot will restart automatically after Game Over.",
             font=("Arial", 8),
             fg="#666666",
             bg="#2b2b2b",
@@ -277,9 +276,6 @@ class TRexGUI:
             status_color = self.get_status_color(current_state)
             self.status_label.config(text=status_text, fg=status_color)
 
-            if current_state == BotState.GAME_OVER and not self.game_over_dialog_shown:
-                self.handle_game_over_dialog()
-
             self.update_current_game_stats()
             self.update_stats()
 
@@ -297,30 +293,11 @@ class TRexGUI:
             BotState.WAITING_FOR_GAME: "yellow",
             BotState.PLAYING: "green",
             BotState.GAME_OVER: "orange",
+            BotState.RESTARTING: "yellow",
             BotState.STOPPED: "red",
             BotState.ERROR: "red",
         }
         return color_map.get(state, "white")
-
-    def handle_game_over_dialog(self):
-        try:
-            self.game_over_dialog_shown = True
-
-            game_stats = self.bot.game_stats
-            score = game_stats.current_score
-            game_time = game_stats.current_game_time
-            jumps = game_stats.current_jumps
-            ducks = game_stats.current_ducks
-
-            self.logger.info(
-                f"Game Over! Score: {score}, Time: {game_time:.1f}s, Jumps: {jumps}, Ducks: {ducks}"
-            )
-
-            self.game_over_dialog_shown = False
-
-        except Exception as e:
-            self.logger.error("Error handling game over dialog", e)
-            self.game_over_dialog_shown = False
 
     def update_current_game_stats(self):
         try:
@@ -365,7 +342,6 @@ class TRexGUI:
         if self.bot.is_running:
             self.bot.stop_bot()
         else:
-            self.game_over_dialog_shown = False
             self.bot.start_bot()
 
     def load_settings(self) -> None:

@@ -23,6 +23,7 @@ class BotState(Enum):
     WAITING_FOR_GAME = "waiting_for_game"
     PLAYING = "playing"
     GAME_OVER = "game_over"
+    RESTARTING = "restarting"
     STOPPED = "stopped"
     ERROR = "error"
 
@@ -35,6 +36,18 @@ class GameStats:
         self.current_score = 0
         self.is_game_over = False
         self.actions_taken = []
+
+        self.last_score_update = 0.0
+        self.score_increment_interval = 0.1
+        self.base_score_increment = 1
+
+    def update_score(self, current_time: float):
+        if current_time - self.last_score_update >= self.score_increment_interval:
+            self.current_score += self.base_score_increment
+            self.last_score_update = current_time
+
+            if self.current_score > 0 and self.current_score % 100 == 0:
+                pass
 
 
 class TRexBot:
@@ -56,12 +69,12 @@ class TRexBot:
         self.object_detector = ObjectDetector(logger)
         self.trajectory_calculator = TrajectoryCalculator(logger)
 
-        # Отслеживание действий
         self.last_action_time = 0
         self.action_cooldown = 0.05
         self.duck_duration = 0.3
         self.is_ducking = False
         self.duck_start_time = 0
+        self.game_over_handled = False
 
         self.settings = {
             "jump_delay": 0.1,
@@ -120,7 +133,6 @@ class TRexBot:
                     f"Canvas template loaded successfully: {self.canvas_width}x{self.canvas_height}"
                 )
 
-                # Сохраняем отладочную информацию о template
                 debug_filename = "debug_screenshots/canvas_template.png"
                 cv2.imwrite(debug_filename, self.canvas_template)
                 self.logger.info(f"Canvas template saved to: {debug_filename}")
@@ -150,7 +162,6 @@ class TRexBot:
                 )
                 return None
 
-            # Ищем точное совпадение canvas.png на экране
             result = cv2.matchTemplate(
                 gray_screenshot, self.canvas_template, cv2.TM_CCOEFF_NORMED
             )
@@ -160,7 +171,6 @@ class TRexBot:
                 f"Template matching result: confidence={max_val:.3f}, location={max_loc}"
             )
 
-            # Попробуем разные пороги
             thresholds = [0.95, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3]
 
             for threshold in thresholds:
@@ -216,8 +226,9 @@ class TRexBot:
             self.state = BotState.SEARCHING_CANVAS
             self.status_message = "Starting bot..."
             self.game_stats = GameStats()
+            self.game_over_handled = False
 
-            self.logger.info("  STARTING BOT")
+            self.logger.info("=== STARTING NEW CANVAS-BASED BOT ===")
             self.bot_thread = threading.Thread(target=self.run_bot, daemon=True)
             self.bot_thread.start()
 
@@ -243,7 +254,7 @@ class TRexBot:
 
     def run_bot(self) -> None:
         try:
-            self.logger.info("  SEARCHING FOR GAME CANVAS")
+            self.logger.info("=== SEARCHING FOR GAME CANVAS ===")
             self.state = BotState.SEARCHING_CANVAS
             self.status_message = "Searching for game canvas..."
 
@@ -255,7 +266,7 @@ class TRexBot:
                 return
 
             self.capture_area = search_result["capture_area"]
-            self.logger.info(f" CAPTURE AREA SET TO: {self.capture_area}")
+            self.logger.info(f"=== CAPTURE AREA SET TO: {self.capture_area} ===")
 
             self.state = BotState.CANVAS_FOUND
             self.status_message = "Game canvas found, press SPACE to start"
@@ -269,6 +280,7 @@ class TRexBot:
 
             self.start_time = time.time()
             self.game_stats = GameStats()
+            self.game_over_handled = False
             self.logger.info("Game started")
             self.state = BotState.PLAYING
             self.status_message = "Playing"
@@ -277,6 +289,10 @@ class TRexBot:
                 if keyboard.is_pressed("esc"):
                     self.logger.info("Exit requested (ESC)")
                     break
+
+                if self.game_over_handled:
+                    time.sleep(0.1)
+                    continue
 
                 try:
                     with mss.mss() as sct:
@@ -287,7 +303,6 @@ class TRexBot:
                         time.sleep(0.5)
                         continue
 
-                    # Отладочные скриншоты
                     frame_count = getattr(self, "frame_count", 0)
                     self.frame_count = frame_count + 1
 
@@ -305,9 +320,8 @@ class TRexBot:
                     self.game_stats.current_game_time = (
                         time.time() - self.start_time if self.start_time else 0
                     )
-                    self.game_stats.current_score = int(
-                        self.game_stats.current_game_time * 10
-                    )
+
+                    self.game_stats.update_score(self.game_stats.current_game_time)
 
                     if self.object_detector.detect_game_over(screenshot):
                         self.handle_game_over()
@@ -394,6 +408,10 @@ class TRexBot:
 
     def handle_game_over(self):
         try:
+            if self.game_over_handled:
+                return
+
+            self.game_over_handled = True
             self.logger.info("Game Over detected")
 
             if self.is_ducking:
@@ -422,7 +440,7 @@ class TRexBot:
                 f"Score: {self.game_stats.current_score}"
             )
 
-            self.state = BotState.GAME_OVER
+            self.state = BotState.RESTARTING
             self.status_message = f"Game Over. Score: {self.game_stats.current_score}. Restarting in 5s..."
             self.save_stats()
 
@@ -446,6 +464,7 @@ class TRexBot:
 
             self.game_stats = GameStats()
             self.start_time = time.time()
+            self.game_over_handled = False
             self.state = BotState.PLAYING
             self.status_message = "Playing"
             self.logger.info("Game restarted automatically")
