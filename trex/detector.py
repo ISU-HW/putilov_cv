@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import time
 from typing import Dict, List, Optional, Tuple
 from logger import Logger
 
@@ -11,6 +12,17 @@ class ObjectDetector:
         self.templates: Dict[str, np.ndarray] = {}
         self.confidence_threshold = 0.6
         self.low_confidence_threshold = 0.4
+
+        
+        self.screenshot_counter = 0
+
+        
+        self.last_screenshot_time = 0
+        self.screenshot_interval = 1.0  
+
+        
+        os.makedirs("debug_screenshots", exist_ok=True)
+
         self.load_templates()
 
     def load_templates(self) -> None:
@@ -70,14 +82,264 @@ class ObjectDetector:
         except Exception as e:
             self.logger.error("Error loading templates", e)
 
-    def detect_objects(self, screenshot: np.ndarray) -> List[Dict]:
+    def should_save_screenshot(self) -> bool:
+        current_time = time.time()
+        if current_time - self.last_screenshot_time >= self.screenshot_interval:
+            self.last_screenshot_time = current_time
+            return True
+        return False
+
+    def save_obstacle_screenshot(
+        self,
+        original_screenshot: np.ndarray,
+        detected_objects: List[Dict],
+        trex_info: Optional[Dict] = None,
+    ) -> None:
+        try:
+            
+            if not self.should_save_screenshot():
+                return
+
+            if not detected_objects:
+                return
+
+            
+            if (
+                len(original_screenshot.shape) == 3
+                and original_screenshot.shape[2] == 3
+            ):
+                
+                screenshot_bgr = cv2.cvtColor(original_screenshot, cv2.COLOR_RGB2BGR)
+            else:
+                screenshot_bgr = original_screenshot.copy()
+
+            
+            obstacles_by_type = {}
+            for obj in detected_objects:
+                obj_type = obj["type"]
+                if obj_type not in obstacles_by_type:
+                    obstacles_by_type[obj_type] = []
+                obstacles_by_type[obj_type].append(obj)
+
+            
+            all_obstacles_screenshot = screenshot_bgr.copy()
+
+            
+            if trex_info:
+                x, y, w, h = (
+                    trex_info["x"],
+                    trex_info["y"],
+                    trex_info["width"],
+                    trex_info["height"],
+                )
+                cv2.rectangle(
+                    all_obstacles_screenshot, (x, y), (x + w, y + h), (0, 255, 0), 2
+                )  
+                cv2.putText(
+                    all_obstacles_screenshot,
+                    f"T-Rex {trex_info['state']}",
+                    (x, y - 5),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5,
+                    (0, 255, 0),
+                    1,
+                )
+
+            for obj_type, objects in obstacles_by_type.items():
+                
+                type_screenshot = screenshot_bgr.copy()
+
+                
+                if trex_info:
+                    x, y, w, h = (
+                        trex_info["x"],
+                        trex_info["y"],
+                        trex_info["width"],
+                        trex_info["height"],
+                    )
+                    cv2.rectangle(
+                        type_screenshot, (x, y), (x + w, y + h), (0, 255, 0), 2
+                    )  
+                    cv2.putText(
+                        type_screenshot,
+                        f"T-Rex {trex_info['state']}",
+                        (x, y - 5),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.5,
+                        (0, 255, 0),
+                        1,
+                    )
+
+                for obj in objects:
+                    
+                    x, y, w, h = obj["x"], obj["y"], obj["width"], obj["height"]
+                    confidence = obj["confidence"]
+
+                    
+                    color = (0, 0, 255)  
+                    thickness = 2
+
+                    
+                    cv2.rectangle(
+                        type_screenshot, (x, y), (x + w, y + h), color, thickness
+                    )
+                    cv2.rectangle(
+                        all_obstacles_screenshot,
+                        (x, y),
+                        (x + w, y + h),
+                        color,
+                        thickness,
+                    )
+
+                    
+                    label = f"{obj_type} {confidence:.2f}"
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.5
+                    font_thickness = 1
+
+                    
+                    (text_width, text_height), _ = cv2.getTextSize(
+                        label, font, font_scale, font_thickness
+                    )
+
+                    
+                    cv2.rectangle(
+                        type_screenshot,
+                        (x, y - text_height - 5),
+                        (x + text_width, y),
+                        (0, 0, 0),
+                        -1,
+                    )
+                    cv2.rectangle(
+                        all_obstacles_screenshot,
+                        (x, y - text_height - 5),
+                        (x + text_width, y),
+                        (0, 0, 0),
+                        -1,
+                    )
+
+                    
+                    cv2.putText(
+                        type_screenshot,
+                        label,
+                        (x, y - 5),
+                        font,
+                        font_scale,
+                        (255, 255, 255),
+                        font_thickness,
+                    )
+                    cv2.putText(
+                        all_obstacles_screenshot,
+                        label,
+                        (x, y - 5),
+                        font,
+                        font_scale,
+                        (255, 255, 255),
+                        font_thickness,
+                    )
+
+                
+                type_filename = f"debug_screenshots/obstacle_{obj_type}.png"
+                cv2.imwrite(type_filename, type_screenshot)
+                self.logger.info(
+                    f"Сохранен скриншот препятствия {obj_type}: {type_filename} (найдено объектов: {len(objects)})"
+                )
+
+            
+            self.screenshot_counter += 1
+            all_filename = (
+                f"debug_screenshots/all_obstacles_{self.screenshot_counter:04d}.png"
+            )
+            cv2.imwrite(all_filename, all_obstacles_screenshot)
+            self.logger.info(f"Сохранен общий скриншот с препятствиями: {all_filename}")
+
+        except Exception as e:
+            self.logger.error("Ошибка при сохранении скриншота препятствий", e)
+
+    def _calculate_exclusion_zone(self, trex_info: Dict) -> Dict:
+        try:
+            
+            padding_x = int(trex_info["width"] * 0.5)  
+            padding_y = int(trex_info["height"] * 0.3)  
+
+            exclusion_zone = {
+                "x1": max(0, trex_info["x"] - padding_x),
+                "y1": max(0, trex_info["y"] - padding_y),
+                "x2": trex_info["x"] + trex_info["width"] + padding_x,
+                "y2": trex_info["y"] + trex_info["height"] + padding_y,
+            }
+
+            return exclusion_zone
+
+        except Exception as e:
+            self.logger.error("Ошибка при расчете зоны исключения", e)
+            return {"x1": 0, "y1": 0, "x2": 0, "y2": 0}
+
+    def _is_in_exclusion_zone(
+        self,
+        obj_x: int,
+        obj_y: int,
+        obj_width: int,
+        obj_height: int,
+        exclusion_zone: Dict,
+    ) -> bool:
+        obj_center_x = obj_x + obj_width // 2
+        obj_center_y = obj_y + obj_height // 2
+
+        return (
+            exclusion_zone["x1"] <= obj_center_x <= exclusion_zone["x2"]
+            and exclusion_zone["y1"] <= obj_center_y <= exclusion_zone["y2"]
+        )
+
+    def _validate_pterodactyl_position(
+        self, obj: Dict, screenshot_shape: Tuple
+    ) -> bool:
+        try:
+            img_height, img_width = screenshot_shape[:2]
+
+            
+            
+            ground_threshold = img_height * 0.6
+
+            if obj["center_y"] > ground_threshold:
+                self.logger.debug(
+                    f"Птеродактиль отклонен: слишком низко (y={obj['center_y']}, порог={ground_threshold})"
+                )
+                return False
+
+            
+            max_width = img_width * 0.15  
+            max_height = img_height * 0.2  
+
+            if obj["width"] > max_width or obj["height"] > max_height:
+                self.logger.debug(
+                    f"Птеродактиль отклонен: слишком большой ({obj['width']}x{obj['height']})"
+                )
+                return False
+
+            return True
+
+        except Exception as e:
+            self.logger.error("Ошибка при валидации позиции птеродактиля", e)
+            return False
+
+    def detect_objects(
+        self, screenshot: np.ndarray, trex_info: Optional[Dict] = None
+    ) -> List[Dict]:
         detected_objects = []
 
         try:
             gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
 
-            # Улучшенная предобработка изображения
+            
             gray_screenshot = cv2.GaussianBlur(gray_screenshot, (3, 3), 0)
+
+            
+            exclusion_zone = None
+            if trex_info:
+                exclusion_zone = self._calculate_exclusion_zone(trex_info)
+                
+                
 
             obstacle_types = [
                 "cactus_small",
@@ -92,12 +354,20 @@ class ObjectDetector:
             for obj_type in obstacle_types:
                 if obj_type in self.templates:
                     objects = self._detect_template_objects_enhanced(
-                        gray_screenshot, obj_type, self.templates[obj_type]
+                        gray_screenshot,
+                        obj_type,
+                        self.templates[obj_type],
+                        exclusion_zone,
+                        screenshot.shape,
                     )
                     detected_objects.extend(objects)
 
             detected_objects = self._filter_overlapping_objects(detected_objects)
             detected_objects = self._classify_pterodactyl_heights(detected_objects)
+
+            
+            if detected_objects:
+                self.save_obstacle_screenshot(screenshot, detected_objects, trex_info)
 
             return detected_objects
 
@@ -125,7 +395,7 @@ class ObjectDetector:
 
                 template = self.templates[template_key]
 
-                # Мульти-масштабное сопоставление
+                
                 for scale in [0.8, 0.9, 1.0, 1.1, 1.2]:
                     resized_template = cv2.resize(template, None, fx=scale, fy=scale)
 
@@ -177,11 +447,11 @@ class ObjectDetector:
             gray_screenshot = cv2.cvtColor(screenshot, cv2.COLOR_BGR2GRAY)
             template = self.templates["game_over"]
 
-            # Проверяем разные части экрана для game over
+            
             regions = [
-                gray_screenshot,  # Весь экран
-                gray_screenshot[:100, :],  # Верхняя часть
-                gray_screenshot[25:125, :],  # Средняя часть
+                gray_screenshot,  
+                gray_screenshot[:100, :],  
+                gray_screenshot[25:125, :],  
             ]
 
             for region in regions:
@@ -204,7 +474,12 @@ class ObjectDetector:
             return False
 
     def _detect_template_objects_enhanced(
-        self, gray_image: np.ndarray, obj_type: str, template: np.ndarray
+        self,
+        gray_image: np.ndarray,
+        obj_type: str,
+        template: np.ndarray,
+        exclusion_zone: Optional[Dict] = None,
+        screenshot_shape: Optional[Tuple] = None,
     ) -> List[Dict]:
         objects = []
 
@@ -215,14 +490,14 @@ class ObjectDetector:
             if template_h > img_h or template_w > img_w:
                 return objects
 
-            # Используем разные пороги для разных типов объектов
+            
             threshold = self.confidence_threshold
             if "pterodactyl" in obj_type:
-                threshold = 0.5  # Птеродактили сложнее обнаружить
+                threshold = 0.65  
             elif "cactus" in obj_type:
-                threshold = 0.65  # Кактусы проще
+                threshold = 0.65  
 
-            # Мульти-масштабное обнаружение
+            
             for scale in [0.8, 0.9, 1.0, 1.1, 1.2]:
                 resized_template = cv2.resize(template, None, fx=scale, fy=scale)
 
@@ -244,6 +519,15 @@ class ObjectDetector:
                     scaled_w = int(template_w * scale)
                     scaled_h = int(template_h * scale)
 
+                    
+                    if "pterodactyl" in obj_type and exclusion_zone:
+                        if self._is_in_exclusion_zone(
+                            x, y, scaled_w, scaled_h, exclusion_zone
+                        ):
+                            
+                            
+                            continue
+
                     obj_data = {
                         "type": obj_type,
                         "x": x,
@@ -257,7 +541,15 @@ class ObjectDetector:
                         "scale": scale,
                     }
 
+                    
                     if "pterodactyl" in obj_type:
+                        if (
+                            screenshot_shape
+                            and not self._validate_pterodactyl_position(
+                                obj_data, screenshot_shape
+                            )
+                        ):
+                            continue
                         obj_data["is_flying"] = True
 
                     objects.append(obj_data)
@@ -272,13 +564,13 @@ class ObjectDetector:
             if "pterodactyl" in obj["type"]:
                 y_pos = obj["center_y"]
 
-                # Классификация высоты птеродактиля
+                
                 if y_pos < 40:
                     obj["height_level"] = "high"
                     obj["duck_required"] = False
                 elif y_pos < 70:
                     obj["height_level"] = "medium"
-                    obj["duck_required"] = True  # Можно пригнуться или прыгнуть
+                    obj["duck_required"] = True  
                 else:
                     obj["height_level"] = "low"
                     obj["duck_required"] = True

@@ -187,12 +187,10 @@ class TRexBot:
         return None
 
     def set_manual_capture_area(self, x: int, y: int, width: int, height: int) -> None:
-        """Ручная установка области захвата для отладки"""
         self.capture_area = {"top": y, "left": x, "width": width, "height": height}
         self.logger.info(f"Manual capture area set: {self.capture_area}")
 
     def test_canvas_matching(self) -> None:
-        """Тестирует поиск canvas на всех мониторах"""
         try:
             with mss.mss() as sct:
                 for i, monitor in enumerate(sct.monitors[1:], 1):
@@ -219,7 +217,7 @@ class TRexBot:
             self.status_message = "Starting bot..."
             self.game_stats = GameStats()
 
-            self.logger.info("=== STARTING NEW CANVAS-BASED BOT ===")
+            self.logger.info("  STARTING BOT")
             self.bot_thread = threading.Thread(target=self.run_bot, daemon=True)
             self.bot_thread.start()
 
@@ -235,7 +233,6 @@ class TRexBot:
             self.state = BotState.STOPPED
             self.status_message = "Stopped"
 
-            # Завершаем пригибание если активно
             if self.is_ducking:
                 pyautogui.keyUp("down")
                 self.is_ducking = False
@@ -246,7 +243,7 @@ class TRexBot:
 
     def run_bot(self) -> None:
         try:
-            self.logger.info("=== SEARCHING FOR GAME CANVAS ===")
+            self.logger.info("  SEARCHING FOR GAME CANVAS")
             self.state = BotState.SEARCHING_CANVAS
             self.status_message = "Searching for game canvas..."
 
@@ -258,7 +255,7 @@ class TRexBot:
                 return
 
             self.capture_area = search_result["capture_area"]
-            self.logger.info(f"=== CAPTURE AREA SET TO: {self.capture_area} ===")
+            self.logger.info(f" CAPTURE AREA SET TO: {self.capture_area}")
 
             self.state = BotState.CANVAS_FOUND
             self.status_message = "Game canvas found, press SPACE to start"
@@ -305,7 +302,6 @@ class TRexBot:
                             f"Saved game screenshot: {debug_filename} (shape: {screenshot.shape})"
                         )
 
-                    # Обновляем статистику
                     self.game_stats.current_game_time = (
                         time.time() - self.start_time if self.start_time else 0
                     )
@@ -313,17 +309,16 @@ class TRexBot:
                         self.game_stats.current_game_time * 10
                     )
 
-                    # Проверяем Game Over
                     if self.object_detector.detect_game_over(screenshot):
                         self.handle_game_over()
                         break
 
-                    # Обнаруживаем T-Rex
                     trex_info = self.object_detector.detect_trex(screenshot)
 
                     if trex_info:
-                        # Обнаруживаем препятствия
-                        obstacles = self.object_detector.detect_objects(screenshot)
+                        obstacles = self.object_detector.detect_objects(
+                            screenshot, trex_info
+                        )
 
                         if obstacles:
                             action, reason = (
@@ -336,8 +331,9 @@ class TRexBot:
 
                             if action != "none":
                                 self.execute_action(action, reason)
+                    else:
+                        obstacles = self.object_detector.detect_objects(screenshot)
 
-                    # Обрабатываем продолжающееся пригибание
                     self.handle_ducking()
 
                     time.sleep(self.settings["scan_delay"])
@@ -427,9 +423,14 @@ class TRexBot:
             )
 
             self.state = BotState.GAME_OVER
-            self.status_message = f"Game Over. Score: {self.game_stats.current_score}"
-            self.game_stats.is_game_over = True
+            self.status_message = f"Game Over. Score: {self.game_stats.current_score}. Restarting in 5s..."
             self.save_stats()
+
+            self.logger.info("Waiting 5 seconds before restart...")
+            time.sleep(5)
+
+            if self.is_running:
+                self.restart_game()
 
         except Exception as e:
             self.logger.error("Error handling game over", e)
@@ -440,13 +441,14 @@ class TRexBot:
                 pyautogui.keyUp("down")
                 self.is_ducking = False
 
+            self.logger.info("Restarting game...")
             pyautogui.press("space")
 
             self.game_stats = GameStats()
             self.start_time = time.time()
             self.state = BotState.PLAYING
             self.status_message = "Playing"
-            self.logger.info("Game restarted")
+            self.logger.info("Game restarted automatically")
 
         except Exception as e:
             self.logger.error("Error restarting game", e)
@@ -463,7 +465,6 @@ class TRexBot:
 
                     screenshot = np.array(sct.grab(monitor))[:, :, :3]
 
-                    # Сохраняем отладочный скриншот полного экрана
                     debug_filename = f"debug_screenshots/monitor_{i}_full.png"
                     cv2.imwrite(
                         debug_filename, cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
@@ -473,7 +474,6 @@ class TRexBot:
                     canvas_area = self.find_canvas_area(screenshot)
 
                     if canvas_area:
-                        # Преобразуем в глобальные координаты
                         global_canvas_area = {
                             "top": canvas_area["y"] + monitor["top"],
                             "left": canvas_area["x"] + monitor["left"],
@@ -485,7 +485,6 @@ class TRexBot:
                         self.logger.info(f"Local canvas area: {canvas_area}")
                         self.logger.info(f"Global capture area: {global_canvas_area}")
 
-                        # Отмечаем найденную область
                         debug_screenshot = screenshot.copy()
                         cv2.rectangle(
                             debug_screenshot,

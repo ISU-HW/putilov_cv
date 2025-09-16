@@ -312,24 +312,9 @@ class TRexGUI:
             jumps = game_stats.current_jumps
             ducks = game_stats.current_ducks
 
-            message = f"""Game Over!
-
-Results:
-• Score: {score}
-• Time: {game_time:.1f} seconds
-• Jumps: {jumps}
-• Ducks: {ducks}
-
-Would you like to start a new game?"""
-
-            result = messagebox.askyesno(
-                "T-Rex Bot - Game Over", message, icon="question"
+            self.logger.info(
+                f"Game Over! Score: {score}, Time: {game_time:.1f}s, Jumps: {jumps}, Ducks: {ducks}"
             )
-
-            if result:
-                self.bot.restart_game()
-            else:
-                self.bot.stop_bot()
 
             self.game_over_dialog_shown = False
 
